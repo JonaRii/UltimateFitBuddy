@@ -91,18 +91,28 @@ jobs:
       - name: Install app on simulator
         run: xcrun simctl install "$SIM_UDID" "$APP_PATH"
 
-      - name: Start screen recording (background)
+      - name: Launch app + wait for first frame
         run: |
           mkdir -p artifacts
+          xcrun simctl launch "$SIM_UDID" com.jonatanriise.fitbuddy
+          # SwiftUI/SwiftData first launch: container init, seed import, network UA setup.
+          sleep 8
+
+      - name: Capture launched dashboard screenshot
+        run: |
+          xcrun simctl io "$SIM_UDID" screenshot artifacts/01-dashboard.png
+
+      - name: Start screen recording for walkthrough
+        run: |
           (xcrun simctl io "$SIM_UDID" recordVideo --codec=h264 artifacts/walkthrough.mov &) || true
           sleep 1
-          # remember the recordVideo pid so we can stop it cleanly later
           REC_PID=$(pgrep -f "simctl io $SIM_UDID recordVideo" | head -1 || true)
           echo "REC_PID=$REC_PID" >> "$GITHUB_ENV"
 
-      - name: Run Maestro walkthrough
+      - name: Run Maestro walkthrough (best-effort)
+        continue-on-error: true
         env:
-          MAESTRO_DRIVER_STARTUP_TIMEOUT: "120000"
+          MAESTRO_DRIVER_STARTUP_TIMEOUT: "300000"
         run: |
           set +e
           maestro --device "$SIM_UDID" test \
@@ -110,7 +120,24 @@ jobs:
             --output artifacts/maestro-report.html \
             .maestro/walkthrough.yaml 2>&1 | tee artifacts/maestro.log
           echo "Maestro exit: $?"
-          # don't fail the whole run on flaky maestro — we still want the artifacts
+
+      - name: Tab walkthrough via UI coordinates (always-runs fallback)
+        run: |
+          # Even if Maestro failed, we can still cycle the tabs by piping a
+          # plist of HID events into simctl. Tab bar y is ~ 818 on a 393-wide
+          # iPhone 16 Pro window in portrait. Tabs are at x: 49, 147, 245, 343.
+          tap() {
+            xcrun simctl ui "$SIM_UDID" tap "$1" "$2" 2>/dev/null || \
+              xcrun simctl io "$SIM_UDID" enumerate >/dev/null 2>&1 || true
+          }
+          # Workouts
+          tap 147 818; sleep 2; xcrun simctl io "$SIM_UDID" screenshot artifacts/02-workouts.png || true
+          # Nutrition
+          tap 245 818; sleep 2; xcrun simctl io "$SIM_UDID" screenshot artifacts/03-nutrition.png || true
+          # You
+          tap 343 818; sleep 2; xcrun simctl io "$SIM_UDID" screenshot artifacts/04-profile.png || true
+          # Back to Today
+          tap  49 818; sleep 2; xcrun simctl io "$SIM_UDID" screenshot artifacts/05-dashboard-final.png || true
 
       - name: Stop screen recording
         if: always()
@@ -118,13 +145,12 @@ jobs:
           if [ -n "${REC_PID:-}" ]; then
             kill -SIGINT "$REC_PID" || true
           fi
-          # give simctl a moment to finalise the .mov
           sleep 4
 
       - name: Convert recording to mp4 (browser-friendly)
         if: always()
         run: |
-          if [ -f artifacts/walkthrough.mov ]; then
+          if [ -f artifacts/walkthrough.mov ] && [ -s artifacts/walkthrough.mov ]; then
             ffmpeg -y -i artifacts/walkthrough.mov \
               -vcodec libx264 -pix_fmt yuv420p -preset fast \
               -movflags +faststart \
@@ -132,11 +158,9 @@ jobs:
             ls -lh artifacts/
           fi
 
-      - name: Snapshot final screen as a fallback
+      - name: Snapshot final state
         if: always()
-        run: |
-          mkdir -p artifacts
-          xcrun simctl io "$SIM_UDID" screenshot artifacts/final.png || true
+        run: xcrun simctl io "$SIM_UDID" screenshot artifacts/final.png || true
 
       - name: Zip the .app for local download / Appetize / etc
         if: always()

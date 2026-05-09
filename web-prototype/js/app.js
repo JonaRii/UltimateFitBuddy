@@ -46,33 +46,52 @@
   // ============================================================
   // Persistence + state
   // ============================================================
-  const STORAGE_KEY = 'ufb_state_v3';
+  const STORAGE_KEY = 'ufb_state_v4';
   const defaultState = () => ({
     theme: null,         // null = follow system, 'light' or 'dark' = override
-    goals: { calories: 2200, protein: 160, carbs: 220, fat: 70, height: 180, weight: 80 },
+    goals: {
+      calories: 2200, protein: 160, carbs: 220, fat: 70,
+      height: 180, weight: 80,
+      waterMl: 2500
+    },
     user: { displayName: '' },
     meals: {},           // yyyy-mm-dd → { breakfast: [], lunch: [], dinner: [], snack: [] }
     workouts: [],        // [{ id, startedAt, endedAt, name, sets: [...] }]
     weights: [],         // [{ kg, recordedAt }]
     customFoods: [],     // user-defined foods
+    favouriteFoodIds: [],// foodIds the user pinned
+    routines: [],        // [{ id, name, exerciseIds: [], notes }]
+    customExercises: [], // user-created exercises mirroring EXERCISES shape
+    recipes: [],         // [{ id, name, servings, ingredients: [{ foodId, grams }] }]
+    savedMeals: [],      // [{ id, name, items: [{ foodId, grams }] }]
+    waterLog: {},        // yyyy-mm-dd → [{ ml, at }]
+    cardio: {},          // yyyy-mm-dd → [{ id, type, minutes, kcal, at }]
+    bodyMeasurements: [],// [{ kind, value, recordedAt }] kind: chest/arm/waist/thigh/bodyFat/etc
     activeWorkoutId: null
   });
 
   function loadState() {
-    const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
+    const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null')
+      || JSON.parse(localStorage.getItem('ufb_state_v3') || 'null');  // v3 → v4 auto-upgrade
     const def = defaultState();
     if (!stored || typeof stored !== 'object') return def;
-    // Defensive merge: any missing top-level key is back-filled with defaults so
-    // partial / older saved states don't crash the views.
     return {
       ...def,
       ...stored,
       goals: { ...def.goals, ...(stored.goals || {}) },
       user: { ...def.user, ...(stored.user || {}) },
       meals: stored.meals || def.meals,
+      waterLog: stored.waterLog || def.waterLog,
+      cardio: stored.cardio || def.cardio,
       workouts: Array.isArray(stored.workouts) ? stored.workouts : def.workouts,
       weights: Array.isArray(stored.weights) ? stored.weights : def.weights,
-      customFoods: Array.isArray(stored.customFoods) ? stored.customFoods : def.customFoods
+      customFoods: Array.isArray(stored.customFoods) ? stored.customFoods : def.customFoods,
+      favouriteFoodIds: Array.isArray(stored.favouriteFoodIds) ? stored.favouriteFoodIds : def.favouriteFoodIds,
+      routines: Array.isArray(stored.routines) ? stored.routines : def.routines,
+      customExercises: Array.isArray(stored.customExercises) ? stored.customExercises : def.customExercises,
+      recipes: Array.isArray(stored.recipes) ? stored.recipes : def.recipes,
+      savedMeals: Array.isArray(stored.savedMeals) ? stored.savedMeals : def.savedMeals,
+      bodyMeasurements: Array.isArray(stored.bodyMeasurements) ? stored.bodyMeasurements : def.bodyMeasurements
     };
   }
   let state = loadState();
@@ -182,6 +201,100 @@
     lookupBarcode(code, fixtures) {
       const cleaned = (code || '').trim();
       return fixtures.find(f => f.barcode === cleaned) || null;
+    },
+
+    /* Total water in ml for a given date. */
+    waterTotalForDate(waterLog, dateKey) {
+      const entries = (waterLog && waterLog[dateKey]) || [];
+      return entries.reduce((s, e) => s + (e.ml || 0), 0);
+    },
+
+    /* Total calories burned via cardio for a given date. */
+    cardioTotalForDate(cardio, dateKey) {
+      const entries = (cardio && cardio[dateKey]) || [];
+      return entries.reduce((s, e) => s + (e.kcal || 0), 0);
+    },
+
+    /* Recently logged food ids, ordered most-recent first, deduped, capped. */
+    recentFoodIds(meals, limit = 30) {
+      const seen = new Map();
+      const dates = Object.keys(meals || {}).sort().reverse();
+      for (const day of dates) {
+        const slots = meals[day] || {};
+        for (const slot of ['breakfast', 'lunch', 'dinner', 'snack']) {
+          const entries = slots[slot] || [];
+          // most recent at end of array → iterate reversed for "newest first within day"
+          for (let i = entries.length - 1; i >= 0; i--) {
+            const id = entries[i].foodId;
+            if (!id || id === 'custom' || id === 'quickadd') continue;
+            if (!seen.has(id)) seen.set(id, entries[i].consumedAt);
+            if (seen.size >= limit) return [...seen.keys()];
+          }
+        }
+      }
+      return [...seen.keys()];
+    },
+
+    /* Detect a personal record: heaviest completed weight × reps for an
+     * exercise across the entire history, where "PR" means a NEW max weight
+     * for any rep count, OR a new max for the same/lower rep count. */
+    detectPRs(allSets) {
+      const byExercise = new Map();
+      const completed = [...allSets]
+        .filter(s => s.completed)
+        .sort((a, b) => new Date(a.performedAt) - new Date(b.performedAt));
+      const prs = new Set();
+      for (const s of completed) {
+        const key = s.exerciseId;
+        if (!byExercise.has(key)) byExercise.set(key, []);
+        const prior = byExercise.get(key);
+        const isPR = !prior.some(p => p.weight >= s.weight && p.reps >= s.reps);
+        if (isPR && s.weight > 0 && s.reps > 0) {
+          prs.add(s.id || `${s.exerciseId}:${s.performedAt}`);
+        }
+        prior.push(s);
+      }
+      return prs;
+    },
+
+    /* Compose a recipe's per-serving macros from its ingredients. */
+    recipePerServing(recipe, foodLookup) {
+      const totals = { cal: 0, p: 0, c: 0, f: 0, fiber: 0 };
+      for (const ing of (recipe.ingredients || [])) {
+        const food = foodLookup(ing.foodId);
+        if (!food) continue;
+        const factor = (ing.grams || 0) / 100;
+        totals.cal   += (food.cal || 0) * factor;
+        totals.p     += (food.p   || 0) * factor;
+        totals.c     += (food.c   || 0) * factor;
+        totals.f     += (food.f   || 0) * factor;
+        totals.fiber += (food.fiber || 0) * factor;
+      }
+      const servings = Math.max(1, recipe.servings || 1);
+      return {
+        cal: totals.cal / servings,
+        p: totals.p / servings,
+        c: totals.c / servings,
+        f: totals.f / servings,
+        fiber: totals.fiber / servings
+      };
+    },
+
+    /* Streak: number of consecutive days up to today that have at least one
+     * logged meal entry. */
+    mealStreak(meals, today) {
+      let count = 0;
+      let d = new Date(today);
+      d.setHours(0, 0, 0, 0);
+      while (true) {
+        const k = LOGIC.dateKey(d);
+        const slots = meals[k] || {};
+        const has = ['breakfast','lunch','dinner','snack'].some(s => (slots[s] || []).length > 0);
+        if (!has) break;
+        count++;
+        d.setDate(d.getDate() - 1);
+      }
+      return count;
     },
 
     /* Best estimated 1RM per session, sorted by date. */
@@ -366,9 +479,19 @@
     const g = state.goals;
 
     // Nav bar
+    const streak = LOGIC.mealStreak(state.meals, day);
     const navBar = h('div', { class: 'nav-bar' },
       h('div', { class: 'nav-titlebar' },
-        h('div', { class: 'leading' }),
+        h('div', { class: 'leading' },
+          streak > 0 ? h('span', {
+            style: {
+              display: 'inline-flex', alignItems: 'center', gap: '4px',
+              padding: '4px 10px', borderRadius: '12px',
+              background: 'var(--orange)', color: '#fff',
+              font: '600 13px var(--font)'
+            }
+          }, '🔥', String(streak), 'd') : null
+        ),
         h('div', { class: 'trailing' },
           h('button', { class: 'icon-btn', onClick: () => navigate('tests') }, svg('testtube.2', { size: 22, strokeWidth: 1.8 }))
         )
@@ -505,6 +628,13 @@
         }),
         listRow({
           icon: 'list.bullet.rectangle.fill', iconBg: 'bg-blue',
+          title: 'Routines',
+          subtitle: state.routines.length + (state.routines.length === 1 ? ' saved' : ' saved'),
+          accessory: 'chevron',
+          onClick: openRoutinesPicker
+        }),
+        listRow({
+          icon: 'dumbbell.fill', iconBg: 'bg-orange',
           title: 'Exercise library',
           accessory: 'chevron',
           onClick: openExerciseLibrary
@@ -533,18 +663,99 @@
     return wrap;
   }
 
-  function startNewWorkout() {
+  function startNewWorkout(seed) {
+    // `seed` is an optional routine — pre-populates the new workout with one
+    // empty set per exercise from the routine, in order.
     const w = {
       id: 'wk-' + Date.now(),
       startedAt: new Date().toISOString(),
       endedAt: null,
-      name: '',
+      name: seed ? seed.name : '',
       sets: []
     };
+    if (seed && Array.isArray(seed.exerciseIds)) {
+      let ordinal = 0;
+      for (const exId of seed.exerciseIds) {
+        const ex = allExercises().find(e => e.id === exId);
+        if (!ex) continue;
+        w.sets.push({
+          exerciseId: ex.id, exerciseName: ex.name,
+          weight: 0, reps: 0, completed: false, isWarmup: false,
+          ordinal: ordinal++, performedAt: new Date().toISOString()
+        });
+      }
+    }
     state.workouts.push(w);
     state.activeWorkoutId = w.id;
     save();
     navigate('active');
+  }
+
+  function openRoutinesPicker() {
+    function build() {
+      const body = h('div');
+      if (state.routines.length === 0) {
+        body.appendChild(emptyState('list.bullet.rectangle', 'No routines yet',
+          'Save the next workout you build as a routine to reuse it later.'));
+      } else {
+        body.appendChild(listSection({
+          header: 'Your routines',
+          rows: state.routines.map(r => listRow({
+            icon: 'dumbbell.fill', iconBg: 'bg-orange',
+            title: r.name || 'Routine',
+            subtitle: (r.exerciseIds || []).length + ' exercises' + (r.notes ? ' · ' + r.notes : ''),
+            accessory: 'chevron',
+            onClick: () => {
+              closeSheet();
+              startNewWorkout(r);
+            }
+          }))
+        }));
+        body.appendChild(listSection({
+          rows: state.routines.map(r => listRow({
+            icon: 'trash', iconBg: 'bg-red',
+            title: 'Delete: ' + (r.name || 'Routine'),
+            onClick: () => {
+              if (confirm('Delete routine \'' + (r.name || 'Routine') + '\'?')) {
+                state.routines = state.routines.filter(x => x.id !== r.id);
+                save(); replace();
+              }
+            }
+          }))
+        }));
+      }
+      return body;
+    }
+    function replace() {
+      const c = $('.sheet-content');
+      if (c) { c.innerHTML = ''; c.appendChild(build()); }
+    }
+    openSheet({
+      title: 'Routines',
+      leading: h('button', { class: 'btn-link', onClick: closeSheet }, 'Close'),
+      body: build()
+    });
+  }
+
+  function saveCurrentAsRoutine() {
+    const w = getActiveWorkout();
+    if (!w) return;
+    const groups = LOGIC.groupSets(w.sets);
+    if (groups.length === 0) {
+      toast('Add at least one exercise');
+      return;
+    }
+    const name = prompt('Routine name', w.name || 'New routine');
+    if (!name) return;
+    const routine = {
+      id: 'r-' + Date.now(),
+      name,
+      exerciseIds: groups.map(g => g.id),
+      notes: ''
+    };
+    state.routines.push(routine);
+    save();
+    toast('Saved routine');
   }
 
   function getActiveWorkout() {
@@ -631,6 +842,7 @@
           h('button', { class: 'btn-link', onClick: () => { stopTimer(); navigate('workouts'); } }, svg('chevron.left', { size: 17, strokeWidth: 2.5 }), 'Workouts')
         ),
         h('div', { class: 'trailing' },
+          h('button', { class: 'btn-link', onClick: saveCurrentAsRoutine }, 'Save as routine'),
           h('button', { class: 'btn-link bold', onClick: finishActive }, 'Finish')
         )
       )
@@ -688,13 +900,20 @@
   }
   function stopTimer() { if (activeTimer) { clearInterval(activeTimer); activeTimer = null; } }
 
+  function setKey(s) { return s.id || `${s.exerciseId}:${s.performedAt}`; }
+  function activePRSet() {
+    const all = state.workouts.flatMap(w => w.sets.map(s => ({ ...s, id: setKey(s) })));
+    return LOGIC.detectPRs(all);
+  }
+
   function renderActiveGroup(w, g) {
     const c = h('div', { class: 'workout-group' });
     c.appendChild(h('div', { class: 'workout-group-header' },
       h('div', { class: 'workout-group-name' }, g.name),
       h('span', { class: 'workout-group-pill' }, g.sets.length + ' sets')
     ));
-    g.sets.forEach((s, i) => c.appendChild(setRow(w, s, i + 1)));
+    const prs = activePRSet();
+    g.sets.forEach((s, i) => c.appendChild(setRow(w, s, i + 1, prs.has(setKey(s)))));
     c.appendChild(h('button', {
       class: 'btn-link', style: { marginTop: '4px' },
       onClick: () => addSetTo(w, g)
@@ -702,9 +921,16 @@
     return c;
   }
 
-  function setRow(w, s, n) {
+  function setRow(w, s, n, isPR) {
     const row = h('div', { class: 'set-row' });
-    row.appendChild(h('div', { class: 'set-num' + (s.completed ? ' done' : '') }, String(n)));
+    const numClass = 'set-num' + (s.completed ? ' done' : '') + (s.isWarmup ? ' warmup' : '');
+    const label = s.isWarmup ? 'W' : String(n);
+    const numEl = h('div', { class: numClass, onClick: () => {
+      // Tap the number to toggle warmup
+      s.isWarmup = !s.isWarmup;
+      save(); rerender();
+    } }, label);
+    row.appendChild(numEl);
 
     const weightInput = h('input', { type: 'number', step: '0.5', value: s.weight || 0, inputmode: 'decimal' });
     weightInput.addEventListener('input', () => { s.weight = parseFloat(weightInput.value) || 0; save(); });
@@ -721,13 +947,27 @@
     const checkBtn = h('button', { class: 'check-btn' + (s.completed ? ' done' : ''), onClick: () => {
       s.completed = !s.completed;
       s.performedAt = new Date().toISOString();
+      if (!s.id) s.id = 'set-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
       save();
-      checkBtn.classList.toggle('done', s.completed);
-      const num = row.querySelector('.set-num');
-      num.classList.toggle('done', s.completed);
+      // Re-render for PR badge update
+      rerender();
       if (s.completed) startRestTimer(90);
     } }, svg('checkmark', { size: 16, strokeWidth: 3 }));
     row.appendChild(checkBtn);
+    if (isPR) {
+      // PR star — overlaid as a small badge top-right of the set number
+      numEl.style.position = 'relative';
+      numEl.appendChild(h('span', {
+        style: {
+          position: 'absolute', top: '-6px', right: '-6px',
+          width: '16px', height: '16px',
+          background: 'var(--yellow)', color: '#111',
+          font: '700 10px var(--font)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          borderRadius: '50%', boxShadow: '0 0 0 1.5px var(--bg-grouped-content)'
+        }
+      }, '★'));
+    }
     return row;
   }
 
@@ -754,28 +994,44 @@
     navigate('workouts');
   }
 
+  function allExercises() {
+    return [...EXERCISES, ...state.customExercises];
+  }
   function openExercisePicker() {
     let q = '';
     let muscle = 'all';
     function rebuild() {
-      const muscles = ['all', ...new Set(EXERCISES.map(e => e.muscle))];
-      const filtered = EXERCISES.filter(e =>
+      const all = allExercises();
+      const muscles = ['all', ...new Set(all.map(e => e.muscle))];
+      const filtered = all.filter(e =>
         (muscle === 'all' || e.muscle === muscle) &&
         (!q || e.name.toLowerCase().includes(q.toLowerCase()))
       );
       const body = h('div');
+      // Action row: create custom exercise
+      body.appendChild(h('div', { class: 'list-section' },
+        h('div', { class: 'list-rows' },
+          listRow({
+            icon: 'plus', iconBg: 'bg-purple',
+            title: 'Create custom exercise',
+            accessory: 'chevron',
+            onClick: () => { closeSheet(); openCustomExerciseEditor(); }
+          })
+        )
+      ));
       body.appendChild(searchField({ placeholder: 'Search', value: q, onInput: v => { q = v; replace(); } }));
       body.appendChild(chipRow(muscles.map(m => ({ id: m, label: m === 'all' ? 'All' : capitalize(m) })), muscle, m => { muscle = m; replace(); }));
       if (filtered.length === 0) body.appendChild(emptyState('magnifyingglass', 'No exercises match'));
       else body.appendChild(listSection({
         rows: filtered.map(e => listRow({
-          title: e.name, subtitle: capitalize(e.muscle) + ' · ' + capitalize(e.equipment),
+          title: e.name + (e.isCustom ? ' (custom)' : ''),
+          subtitle: capitalize(e.muscle) + ' · ' + capitalize(e.equipment),
           accessory: 'chevron',
           onClick: () => {
             const w = getActiveWorkout(); if (!w) return;
             w.sets.push({
               exerciseId: e.id, exerciseName: e.name,
-              weight: 0, reps: 0, completed: false,
+              weight: 0, reps: 0, completed: false, isWarmup: false,
               ordinal: w.sets.length, performedAt: new Date().toISOString()
             });
             save(); closeSheet(); rerender();
@@ -792,6 +1048,82 @@
       title: 'Pick exercise',
       leading: h('button', { class: 'btn-link', onClick: closeSheet }, 'Cancel'),
       body: rebuild()
+    });
+  }
+
+  function openCustomExerciseEditor() {
+    const muscles = ['quads','hamstrings','glutes','calves','chest','back','shoulders','traps','biceps','triceps','core','obliques','fullBody'];
+    const equipment = ['barbell','dumbbell','machine','cable','bodyweight','kettlebell','band','other'];
+    let name = '', muscle = muscles[0], eq = equipment[0], mechanic = 'compound';
+    function build() {
+      const body = h('div');
+      body.appendChild(listSection({
+        header: 'Exercise',
+        rows: [
+          listRow({
+            title: 'Name',
+            rightInput: (() => {
+              const i = h('input', { type: 'text', class: 'row-input', placeholder: 'e.g., Goblet Squat 2.0' });
+              i.style.textAlign = 'right';
+              i.addEventListener('input', () => name = i.value);
+              return i;
+            })()
+          })
+        ]
+      }));
+      body.appendChild(listSection({
+        header: 'Primary muscle',
+        rows: muscles.map(m => listRow({
+          title: capitalize(m),
+          accessory: m === muscle ? svg('checkmark', { size: 16, strokeWidth: 3 }) : null,
+          onClick: () => { muscle = m; replace(); }
+        }))
+      }));
+      body.appendChild(listSection({
+        header: 'Equipment',
+        rows: equipment.map(e => listRow({
+          title: capitalize(e),
+          accessory: e === eq ? svg('checkmark', { size: 16, strokeWidth: 3 }) : null,
+          onClick: () => { eq = e; replace(); }
+        }))
+      }));
+      body.appendChild(listSection({
+        header: 'Mechanic',
+        rows: [
+          listRow({
+            title: 'Compound',
+            accessory: mechanic === 'compound' ? svg('checkmark', { size: 16, strokeWidth: 3 }) : null,
+            onClick: () => { mechanic = 'compound'; replace(); }
+          }),
+          listRow({
+            title: 'Isolation',
+            accessory: mechanic === 'isolation' ? svg('checkmark', { size: 16, strokeWidth: 3 }) : null,
+            onClick: () => { mechanic = 'isolation'; replace(); }
+          })
+        ]
+      }));
+      body.appendChild(h('div', { style: { padding: '0 16px', marginTop: '8px' } },
+        h('button', { class: 'btn-primary', onClick: () => {
+          if (!name) return toast('Name required');
+          state.customExercises.push({
+            id: 'cex-' + Date.now(),
+            name, muscle, equipment: eq, mechanic, category: 'strength', isCustom: true
+          });
+          save(); closeSheet();
+          toast('Exercise saved');
+          openExercisePicker();
+        } }, 'Save')
+      ));
+      return body;
+    }
+    function replace() {
+      const c = $('.sheet-content');
+      if (c) { c.innerHTML = ''; c.appendChild(build()); }
+    }
+    openSheet({
+      title: 'New exercise',
+      leading: h('button', { class: 'btn-link', onClick: () => { closeSheet(); openExercisePicker(); } }, 'Cancel'),
+      body: build()
     });
   }
 
@@ -871,20 +1203,32 @@
       )
     ));
 
-    // Daily totals card
-    const left = Math.max(0, Math.round(g.calories - totals.cal));
+    // Daily totals card — net of cardio burned (MyFitnessPal style)
+    const cardioToday = LOGIC.cardioTotalForDate(state.cardio, key);
+    const netConsumed = totals.cal;
+    const adjustedGoal = g.calories + cardioToday;
+    const left = Math.max(0, Math.round(adjustedGoal - netConsumed));
     wrap.appendChild(card(
       h('div', { style: { display: 'flex', alignItems: 'baseline', gap: '6px' } },
-        h('span', { style: { font: '700 36px var(--font)', fontVariantNumeric: 'tabular-nums' } }, Math.round(totals.cal).toLocaleString()),
-        h('span', { class: 'subtitle' }, '/ ' + g.calories.toLocaleString() + ' kcal'),
+        h('span', { style: { font: '700 36px var(--font)', fontVariantNumeric: 'tabular-nums' } }, Math.round(netConsumed).toLocaleString()),
+        h('span', { class: 'subtitle' }, '/ ' + adjustedGoal.toLocaleString() + ' kcal'),
         h('span', { style: { marginLeft: 'auto', fontWeight: '500', color: 'var(--label-secondary)' } }, left + ' left')
       ),
+      cardioToday > 0
+        ? h('div', { class: 'subtitle', style: { marginTop: '2px' } }, '+' + Math.round(cardioToday) + ' kcal from cardio')
+        : null,
       h('div', { style: { marginTop: '8px' } },
         macroBar('Protein', totals.p, g.protein, '--macro-protein'),
         macroBar('Carbs', totals.c, g.carbs, '--macro-carbs'),
         macroBar('Fat', totals.f, g.fat, '--macro-fat')
       )
     ));
+
+    // Water card
+    wrap.appendChild(waterCard(key));
+
+    // Cardio card (above meal cards)
+    wrap.appendChild(cardioCard(key));
 
     // Meals
     const meals = state.meals[key] || {};
@@ -926,12 +1270,156 @@
 
   function addDays(d, n) { const r = new Date(d); r.setDate(r.getDate() + n); return r; }
 
-  function openFoodSearch(slot) {
-    let q = '';
-    let view = 'search';
+  // ----- Water card -----
+  const WATER_GLASS_ML = 250;
+  function waterCard(dateKey) {
+    const total = LOGIC.waterTotalForDate(state.waterLog, dateKey);
+    const goal = state.goals.waterMl || 2500;
+    const glasses = Math.round(total / WATER_GLASS_ML);
+    const goalGlasses = Math.max(1, Math.round(goal / WATER_GLASS_ML));
+    const c = h('div', { class: 'meal-card' });
+    c.appendChild(h('div', { class: 'meal-card-header' },
+      h('div', { class: 'meal-card-icon bg-blue' }, svg('flame.fill', { size: 16 })),  // placeholder droplet
+      h('div', { class: 'meal-card-title' }, 'Water'),
+      h('div', { class: 'meal-card-cal' }, Math.round(total) + ' / ' + goal + ' ml'),
+      h('button', { class: 'meal-card-add', onClick: () => addWater(dateKey, WATER_GLASS_ML) }, svg('plus', { size: 14, strokeWidth: 2.6 }))
+    ));
+    // Cup row: filled / unfilled circles
+    const row = h('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '4px' } });
+    for (let i = 0; i < goalGlasses; i++) {
+      const filled = i < glasses;
+      row.appendChild(h('button', {
+        style: {
+          width: '32px', height: '40px',
+          appearance: 'none', border: 0, padding: 0, cursor: 'pointer',
+          borderRadius: '6px',
+          background: filled ? 'var(--blue)' : 'var(--fill-tertiary)',
+          color: filled ? '#fff' : 'var(--label-secondary)',
+          font: '600 12px var(--font)'
+        },
+        onClick: () => setWaterGlasses(dateKey, i + 1)
+      }, '💧'));
+    }
+    c.appendChild(row);
+    if (glasses > 0) {
+      c.appendChild(h('button', {
+        class: 'btn-link', style: { marginTop: '4px', padding: '4px 0', color: 'var(--red)' },
+        onClick: () => removeLastWater(dateKey)
+      }, 'Remove last'));
+    }
+    return c;
+  }
+  function addWater(dateKey, ml) {
+    state.waterLog[dateKey] = state.waterLog[dateKey] || [];
+    state.waterLog[dateKey].push({ ml, at: new Date().toISOString() });
+    save(); rerender();
+    toast('+' + ml + ' ml water');
+  }
+  function setWaterGlasses(dateKey, n) {
+    state.waterLog[dateKey] = [];
+    for (let i = 0; i < n; i++) {
+      state.waterLog[dateKey].push({ ml: WATER_GLASS_ML, at: new Date().toISOString() });
+    }
+    save(); rerender();
+  }
+  function removeLastWater(dateKey) {
+    const arr = state.waterLog[dateKey] || [];
+    if (arr.length === 0) return;
+    arr.pop(); save(); rerender();
+  }
+
+  // ----- Cardio card -----
+  function cardioCard(dateKey) {
+    const entries = state.cardio[dateKey] || [];
+    const total = LOGIC.cardioTotalForDate(state.cardio, dateKey);
+    const c = h('div', { class: 'meal-card' });
+    c.appendChild(h('div', { class: 'meal-card-header' },
+      h('div', { class: 'meal-card-icon bg-orange' }, svg('flame.fill', { size: 16 })),
+      h('div', { class: 'meal-card-title' }, 'Cardio'),
+      entries.length > 0
+        ? h('div', { class: 'meal-card-cal' }, '+' + Math.round(total) + ' kcal')
+        : null,
+      h('button', { class: 'meal-card-add', onClick: () => openCardioSheet(dateKey) }, svg('plus', { size: 14, strokeWidth: 2.6 }))
+    ));
+    if (entries.length === 0) {
+      c.appendChild(h('div', { class: 'subtitle', style: { padding: '8px 0' } }, 'No cardio logged'));
+    } else {
+      entries.forEach((e, i) => {
+        c.appendChild(h('div', { class: 'food-entry' },
+          h('div', { class: 'text' },
+            h('div', { class: 'title' }, e.type),
+            h('div', { class: 'subtitle' }, e.minutes + ' min · +' + Math.round(e.kcal) + ' kcal')
+          ),
+          h('button', { class: 'delete-btn', onClick: () => {
+            entries.splice(i, 1); save(); rerender();
+          } }, svg('xmark', { size: 16, strokeWidth: 2.5 }))
+        ));
+      });
+    }
+    return c;
+  }
+  function openCardioSheet(dateKey) {
+    const types = ['Running', 'Cycling', 'Swimming', 'Walking', 'Hiking', 'Rowing', 'Elliptical', 'HIIT', 'Other'];
+    let type = types[0];
+    let minutes = 30;
+    let kcal = 300;
     function build() {
       const body = h('div');
-      // Action row
+      body.appendChild(listSection({
+        header: 'Activity',
+        rows: types.map(t => listRow({
+          title: t,
+          accessory: t === type ? svg('checkmark', { size: 16, strokeWidth: 3 }) : null,
+          onClick: () => { type = t; replace(); }
+        }))
+      }));
+      body.appendChild(listSection({
+        header: 'Details',
+        rows: [
+          listRow({ title: 'Duration', rightInput: numericInput(minutes, v => { minutes = v; replace(); }, 'min') }),
+          listRow({ title: 'Calories burned', rightInput: numericInput(kcal, v => { kcal = v; }, 'kcal') })
+        ],
+        footer: 'These calories are added to your daily calorie budget.'
+      }));
+      body.appendChild(h('div', { style: { padding: '0 16px', marginTop: '8px' } },
+        h('button', { class: 'btn-primary', onClick: () => {
+          state.cardio[dateKey] = state.cardio[dateKey] || [];
+          state.cardio[dateKey].push({
+            id: 'cardio-' + Date.now(),
+            type, minutes: minutes || 0, kcal: kcal || 0,
+            at: new Date().toISOString()
+          });
+          save(); closeSheet(); rerender();
+          toast('+' + Math.round(kcal) + ' kcal cardio');
+        } }, 'Save')
+      ));
+      return body;
+    }
+    function replace() {
+      const c = $('.sheet-content');
+      if (c) { c.innerHTML = ''; c.appendChild(build()); }
+    }
+    openSheet({
+      title: 'Log cardio',
+      leading: h('button', { class: 'btn-link', onClick: closeSheet }, 'Cancel'),
+      body: build()
+    });
+  }
+
+  function openFoodSearch(slot) {
+    let q = '';
+    function foodById(id) {
+      return [...FOODS, ...state.customFoods].find(f => f.id === id);
+    }
+    function favouriteToggle(id) {
+      const i = state.favouriteFoodIds.indexOf(id);
+      if (i >= 0) state.favouriteFoodIds.splice(i, 1);
+      else state.favouriteFoodIds.unshift(id);
+      save();
+    }
+    function build() {
+      const body = h('div');
+      // Action row: scan / quick-add / custom food
       body.appendChild(h('div', { class: 'list-section' },
         h('div', { class: 'list-rows' },
           listRow({
@@ -939,6 +1427,13 @@
             title: 'Scan barcode',
             accessory: 'chevron',
             onClick: () => { closeSheet(); openScanner(slot); }
+          }),
+          listRow({
+            icon: 'plus', iconBg: 'bg-green',
+            title: 'Quick add calories',
+            subtitle: 'No food, just numbers',
+            accessory: 'chevron',
+            onClick: () => { closeSheet(); openQuickAdd(slot); }
           }),
           listRow({
             icon: 'square.and.pencil', iconBg: 'bg-purple',
@@ -949,20 +1444,59 @@
         )
       ));
       body.appendChild(searchField({ placeholder: 'Search foods', value: q, onInput: v => { q = v; replace(); } }));
+
       const all = [...FOODS, ...state.customFoods];
-      const filtered = q
-        ? all.filter(f => f.name.toLowerCase().includes(q.toLowerCase()))
-        : all.slice(0, 30);
-      if (filtered.length === 0) body.appendChild(emptyState('magnifyingglass', 'Nothing found'));
-      else body.appendChild(listSection({
-        rows: filtered.map(f => listRow({
+      if (q) {
+        const ql = q.toLowerCase();
+        const filtered = all.filter(f => f.name.toLowerCase().includes(ql));
+        if (filtered.length === 0) body.appendChild(emptyState('magnifyingglass', 'Nothing found'));
+        else body.appendChild(listSection({
+          rows: filtered.map(f => foodRow(f))
+        }));
+      } else {
+        // Favourites first
+        const favIds = state.favouriteFoodIds;
+        const favs = favIds.map(id => all.find(f => f.id === id)).filter(Boolean);
+        if (favs.length > 0) {
+          body.appendChild(listSection({
+            header: 'Favourites',
+            rows: favs.map(f => foodRow(f))
+          }));
+        }
+        // Recent
+        const recentIds = LOGIC.recentFoodIds(state.meals, 8);
+        const recent = recentIds.map(id => all.find(f => f.id === id)).filter(Boolean);
+        if (recent.length > 0) {
+          body.appendChild(listSection({
+            header: 'Recent',
+            rows: recent.map(f => foodRow(f))
+          }));
+        }
+        // All foods (capped)
+        body.appendChild(listSection({
+          header: 'All foods',
+          rows: all.slice(0, 50).map(f => foodRow(f))
+        }));
+      }
+      return body;
+
+      function foodRow(f) {
+        const isFav = state.favouriteFoodIds.includes(f.id);
+        const star = h('button', {
+          class: 'icon-btn',
+          style: { padding: '4px', color: isFav ? 'var(--yellow)' : 'var(--label-tertiary)' },
+          onClick: (e) => { e.stopPropagation(); favouriteToggle(f.id); replace(); }
+        }, svg('checkmark', { size: 18, strokeWidth: 2.4 }));
+        // Use a star-ish character via text since we don't have a star icon
+        star.innerHTML = isFav ? '★' : '☆';
+        star.style.fontSize = '20px'; star.style.lineHeight = '1';
+        return listRow({
           title: f.name,
           subtitle: Math.round(f.cal) + ' kcal/100g · P ' + f.p + ' / C ' + f.c + ' / F ' + f.f,
-          accessory: 'chevron',
+          accessory: star,
           onClick: () => { closeSheet(); openFoodPortion(f, slot); }
-        }))
-      }));
-      return body;
+        });
+      }
     }
     function replace() {
       const c = $('.sheet-content');
@@ -970,6 +1504,44 @@
     }
     openSheet({
       title: 'Add to ' + capitalize(slot),
+      leading: h('button', { class: 'btn-link', onClick: closeSheet }, 'Cancel'),
+      body: build()
+    });
+  }
+
+  function openQuickAdd(slot) {
+    let kcal = 0, p = 0, c = 0, f = 0;
+    function build() {
+      const body = h('div');
+      body.appendChild(listSection({
+        header: 'Quick add to ' + capitalize(slot),
+        rows: [
+          listRow({ title: 'Calories', rightInput: numericInput(kcal, v => { kcal = v; }, 'kcal') }),
+          listRow({ title: 'Protein',  rightInput: numericInput(p,    v => { p    = v; }, 'g') }),
+          listRow({ title: 'Carbs',    rightInput: numericInput(c,    v => { c    = v; }, 'g') }),
+          listRow({ title: 'Fat',      rightInput: numericInput(f,    v => { f    = v; }, 'g') })
+        ],
+        footer: 'Use this when you don\'t want to log a specific food — eating out, custom snack, etc.'
+      }));
+      body.appendChild(h('div', { style: { padding: '0 16px', marginTop: '8px' } },
+        h('button', { class: 'btn-primary', onClick: () => {
+          if (kcal <= 0) return toast('Enter calories');
+          const key = LOGIC.dateKey(viewDate);
+          state.meals[key] = state.meals[key] || { breakfast: [], lunch: [], dinner: [], snack: [] };
+          state.meals[key][slot].push({
+            foodId: 'quickadd',
+            foodName: 'Quick add',
+            grams: 0,
+            cal: kcal, p, c, fat: f, fiber: 0,
+            consumedAt: new Date().toISOString()
+          });
+          save(); closeSheet(); rerender(); toast('+' + Math.round(kcal) + ' kcal');
+        } }, 'Add ' + Math.round(kcal) + ' kcal')
+      ));
+      return body;
+    }
+    openSheet({
+      title: 'Quick add',
       leading: h('button', { class: 'btn-link', onClick: closeSheet }, 'Cancel'),
       body: build()
     });
@@ -1184,7 +1756,8 @@
         gRow('Calories', 'calories', 'kcal', true),
         gRow('Protein',  'protein', 'g', true),
         gRow('Carbs',    'carbs',   'g', true),
-        gRow('Fat',      'fat',     'g', true)
+        gRow('Fat',      'fat',     'g', true),
+        gRow('Water',    'waterMl', 'ml', true)
       ]
     }));
     wrap.appendChild(listSection({
@@ -1479,6 +2052,109 @@
             throw new Error('Bad EAN: ' + fx.barcode);
           }
         }
+      }
+    },
+    {
+      name: 'waterTotalForDate sums entries',
+      run: () => {
+        const log = { '2026-05-09': [{ ml: 250 }, { ml: 250 }, { ml: 500 }] };
+        assertClose(LOGIC.waterTotalForDate(log, '2026-05-09'), 1000);
+      }
+    },
+    {
+      name: 'waterTotalForDate is 0 for missing date',
+      run: () => {
+        assertClose(LOGIC.waterTotalForDate({}, '2026-05-09'), 0);
+        assertClose(LOGIC.waterTotalForDate(null, '2026-05-09'), 0);
+      }
+    },
+    {
+      name: 'cardioTotalForDate sums kcal',
+      run: () => {
+        const c = { '2026-05-09': [{ kcal: 200 }, { kcal: 150 }] };
+        assertClose(LOGIC.cardioTotalForDate(c, '2026-05-09'), 350);
+      }
+    },
+    {
+      name: 'recentFoodIds dedupes and orders by recency',
+      run: () => {
+        const meals = {
+          '2026-05-09': { breakfast: [{ foodId: 'a', consumedAt: 'x' }, { foodId: 'b', consumedAt: 'y' }], lunch: [], dinner: [], snack: [] },
+          '2026-05-08': { breakfast: [{ foodId: 'c' }], lunch: [{ foodId: 'a' }], dinner: [], snack: [] }
+        };
+        const ids = LOGIC.recentFoodIds(meals, 10);
+        assertEqual(ids[0], 'b');
+        assertEqual(ids[1], 'a');
+        assertEqual(ids[2], 'c');
+        assertEqual(ids.length, 3);
+      }
+    },
+    {
+      name: 'recentFoodIds drops quickadd / custom',
+      run: () => {
+        const meals = {
+          '2026-05-09': {
+            breakfast: [{ foodId: 'quickadd' }, { foodId: 'real-1' }, { foodId: 'custom' }],
+            lunch: [], dinner: [], snack: []
+          }
+        };
+        const ids = LOGIC.recentFoodIds(meals, 10);
+        assertEqual(ids.length, 1);
+        assertEqual(ids[0], 'real-1');
+      }
+    },
+    {
+      name: 'detectPRs flags only new bests',
+      run: () => {
+        const sets = [
+          { id: 's1', exerciseId: 'a', performedAt: '2026-05-01', completed: true, weight: 80, reps: 5 },
+          { id: 's2', exerciseId: 'a', performedAt: '2026-05-02', completed: true, weight: 80, reps: 5 }, // tie, NOT PR
+          { id: 's3', exerciseId: 'a', performedAt: '2026-05-03', completed: true, weight: 82.5, reps: 5 } // PR
+        ];
+        const prs = LOGIC.detectPRs(sets);
+        assertEqual(prs.has('s1'), true);
+        assertEqual(prs.has('s2'), false);
+        assertEqual(prs.has('s3'), true);
+      }
+    },
+    {
+      name: 'recipePerServing divides totals by servings',
+      run: () => {
+        const recipe = {
+          servings: 2,
+          ingredients: [
+            { foodId: 'rice', grams: 200 },
+            { foodId: 'chicken', grams: 200 }
+          ]
+        };
+        const lookup = id => id === 'rice'
+          ? { cal: 130, p: 2.7, c: 28, f: 0.3 }
+          : { cal: 165, p: 31, c: 0, f: 3.6 };
+        const m = LOGIC.recipePerServing(recipe, lookup);
+        // Per ingredient totals: rice = 260 kcal, chicken = 330 kcal → 590 / 2 = 295
+        assertClose(m.cal, 295);
+        assertClose(m.p, (2.7*2 + 31*2) / 2);
+      }
+    },
+    {
+      name: 'mealStreak counts consecutive days back',
+      run: () => {
+        const today = new Date(2026, 4, 9);
+        const meals = {
+          '2026-05-09': { breakfast: [{ cal: 100 }] },
+          '2026-05-08': { lunch: [{ cal: 200 }] },
+          '2026-05-07': { dinner: [{ cal: 300 }] },
+          // gap on 5-06
+          '2026-05-05': { breakfast: [{ cal: 100 }] }
+        };
+        assertEqual(LOGIC.mealStreak(meals, today), 3);
+      }
+    },
+    {
+      name: 'mealStreak is 0 with no meals today',
+      run: () => {
+        const today = new Date(2026, 4, 9);
+        assertEqual(LOGIC.mealStreak({}, today), 0);
       }
     },
     {

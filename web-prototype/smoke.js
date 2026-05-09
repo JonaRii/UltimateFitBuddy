@@ -183,7 +183,7 @@ async function run() {
 
   // Verify the workout was saved
   const savedCount = await page.evaluate(() => {
-    const s = JSON.parse(localStorage.getItem('ufb_state_v3') || '{}');
+    const s = JSON.parse(localStorage.getItem('ufb_state_v4') || '{}');
     return (s.workouts || []).filter(w => w.endedAt).length;
   });
   log(`  workouts in storage: ${savedCount}`);
@@ -196,9 +196,8 @@ async function run() {
   await page.locator('.tab-btn', { hasText: 'Nutrition' }).click();
   await page.waitForTimeout(300);
   await shot(page, 'flow-6-nutrition');
-  // Tap + on Breakfast
-  const addBtns = page.locator('.meal-card-add');
-  await addBtns.first().click();
+  // Tap + specifically on the Breakfast meal card (water + cardio also have add buttons now).
+  await page.locator('.meal-card', { hasText: 'Breakfast' }).locator('.meal-card-add').click();
   await page.waitForTimeout(200);
   await shot(page, 'flow-7-add-food-sheet');
   await page.locator('.list-row', { hasText: 'Scan barcode' }).click();
@@ -215,7 +214,7 @@ async function run() {
 
   // Verify entry persisted
   const breakfastEntries = await page.evaluate(() => {
-    const s = JSON.parse(localStorage.getItem('ufb_state_v3') || '{}');
+    const s = JSON.parse(localStorage.getItem('ufb_state_v4') || '{}');
     const today = new Date();
     const key = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}-${String(today.getDate()).padStart(2,'0')}`;
     return ((s.meals || {})[key] || {}).breakfast || [];
