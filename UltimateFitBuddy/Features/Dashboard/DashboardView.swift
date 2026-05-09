@@ -86,6 +86,7 @@ struct DashboardView: View {
                     workoutCard
                     healthKitCard
                     weightCard
+                    calorieTrendCard
                 }
                 .padding(.horizontal)
                 .padding(.bottom, 24)
@@ -93,6 +94,59 @@ struct DashboardView: View {
             .navigationTitle("Today")
             .background(Color(.systemGroupedBackground))
             .refreshable { await appState.healthKit.refreshTodayMetrics() }
+        }
+    }
+
+    private var calorieTrendCard: some View {
+        let goal = Double(user?.calorieGoal ?? 2200)
+        let cal = Calendar.current
+        let points: [(Date, Double)] = (0...6).reversed().compactMap { offset in
+            let day = cal.date(byAdding: .day, value: -offset, to: cal.startOfDay(for: .now))!
+            let next = cal.date(byAdding: .day, value: 1, to: day)!
+            let descriptor = FetchDescriptor<Meal>(
+                predicate: #Predicate { $0.date >= day && $0.date < next }
+            )
+            let meals = (try? modelContext.fetch(descriptor)) ?? []
+            let total = meals.reduce(0.0) { $0 + $1.totalMacros.calories }
+            return (day, total)
+        }
+        let hasData = points.contains { $0.1 > 0 }
+        return Group {
+            if hasData {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack {
+                        Text("Calories — last 7 days").font(.headline)
+                        Spacer()
+                        let avg = points.filter { $0.1 > 0 }.reduce(0.0) { $0 + $1.1 } / Double(max(1, points.filter { $0.1 > 0 }.count))
+                        Text("\(Int(avg)) avg")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                    Chart {
+                        ForEach(points, id: \.0) { day, value in
+                            BarMark(
+                                x: .value("Day", day, unit: .day),
+                                y: .value("kcal", value)
+                            )
+                            .foregroundStyle(value > goal ? AppTheme.danger : AppTheme.accent)
+                            .cornerRadius(4)
+                        }
+                        RuleMark(y: .value("Goal", goal))
+                            .foregroundStyle(.secondary.opacity(0.5))
+                            .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 4]))
+                            .annotation(position: .top, alignment: .trailing) {
+                                Text("goal").font(.caption2).foregroundStyle(.secondary)
+                            }
+                    }
+                    .frame(height: 160)
+                    .chartXAxis {
+                        AxisMarks(values: .stride(by: .day)) { value in
+                            AxisValueLabel(format: .dateTime.weekday(.narrow))
+                        }
+                    }
+                }
+                .card()
+            }
         }
     }
 

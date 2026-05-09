@@ -67,6 +67,11 @@ struct ProfileView: View {
                     } label: {
                         Label("Body measurements", systemImage: "ruler")
                     }
+                    NavigationLink {
+                        SavedMealsListView()
+                    } label: {
+                        Label("Saved meals", systemImage: "bookmark")
+                    }
                 }
                 Section("Apple Health") {
                     HStack {
