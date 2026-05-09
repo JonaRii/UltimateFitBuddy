@@ -94,6 +94,13 @@ struct ProfileView: View {
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }
+                Section("Test tools") {
+                    Button {
+                        SampleDataLoader.load(into: modelContext)
+                    } label: {
+                        Label("Load sample data", systemImage: "arrow.clockwise")
+                    }
+                }
                 Section("About") {
                     LabeledContent("Version", value: appVersion)
                     Link("Open Food Facts", destination: URL(string: "https://world.openfoodfacts.org")!)

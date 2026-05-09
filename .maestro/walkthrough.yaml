@@ -6,6 +6,15 @@ name: First-launch walkthrough
     permissions:
       all: allow
 - waitForAnimationToEnd
+
+# Dismiss the 3-page onboarding via the Skip button on the first card
+- runFlow:
+    when:
+      visible: "Welcome to Fit Buddy"
+    commands:
+      - tapOn: "Skip"
+      - waitForAnimationToEnd
+
 - takeScreenshot: 01-dashboard
 
 # Cycle through every tab so we capture each home view
