@@ -14,6 +14,9 @@ struct WorkoutsTabView: View {
                         Label("Start empty workout", systemImage: "play.fill")
                             .foregroundStyle(AppTheme.accent)
                     }
+                    NavigationLink(destination: RoutinesListView()) {
+                        Label("Routines", systemImage: "list.bullet.rectangle")
+                    }
                     NavigationLink(destination: ExerciseLibraryView()) {
                         Label("Exercise library", systemImage: "books.vertical")
                     }

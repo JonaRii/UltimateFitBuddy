@@ -289,7 +289,7 @@ struct CardioEntrySheet: View {
                         }
                     }
                 }
-                Section("Details") {
+                Section {
                     HStack {
                         Text("Duration")
                         Spacer()
@@ -308,6 +308,8 @@ struct CardioEntrySheet: View {
                             .frame(width: 80)
                         Text("kcal").foregroundStyle(.secondary)
                     }
+                } header: {
+                    Text("Details")
                 } footer: {
                     Text("Adds to your daily calorie budget.")
                 }

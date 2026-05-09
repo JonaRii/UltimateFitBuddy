@@ -225,11 +225,13 @@ struct QuickAddView: View {
 
     var body: some View {
         Form {
-            Section("Quick add") {
+            Section {
                 numField("Calories", value: $kcal, unit: "kcal")
                 numField("Protein", value: $protein, unit: "g")
                 numField("Carbs", value: $carbs, unit: "g")
                 numField("Fat", value: $fat, unit: "g")
+            } header: {
+                Text("Quick add")
             } footer: {
                 Text("For when you don't want to log a specific food.")
             }

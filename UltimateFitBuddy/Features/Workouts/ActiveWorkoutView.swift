@@ -6,9 +6,13 @@ struct ActiveWorkoutView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(AppState.self) private var appState
 
+    var seed: Routine? = nil
+
     @State private var session: WorkoutSession?
     @State private var showingExercisePicker = false
     @State private var showingPlateCalc = false
+    @State private var showingSaveRoutine = false
+    @State private var routineName: String = ""
     @State private var restSeconds: Int? = nil
     @State private var elapsedTimer: Timer?
     @State private var elapsed: TimeInterval = 0
@@ -26,9 +30,21 @@ struct ActiveWorkoutView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Button("Finish") { finish() }
-                    .disabled(session == nil)
+                HStack(spacing: 12) {
+                    Button("Save routine") { showingSaveRoutine = true }
+                        .disabled(session == nil || (session?.sets ?? []).isEmpty)
+                    Button("Finish") { finish() }
+                        .disabled(session == nil)
+                        .bold()
+                }
             }
+        }
+        .alert("Save as routine", isPresented: $showingSaveRoutine) {
+            TextField("Name", text: $routineName)
+            Button("Save") { saveAsRoutine() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Save the exercise list of this workout for reuse.")
         }
         .onDisappear { elapsedTimer?.invalidate() }
         .sheet(isPresented: $showingExercisePicker) {
@@ -96,13 +112,40 @@ struct ActiveWorkoutView: View {
     }
 
     private func startSession() {
-        let s = WorkoutSession(name: "", startedAt: .now)
+        let s = WorkoutSession(name: seed?.name ?? "", startedAt: .now)
         modelContext.insert(s)
+        if let seed {
+            // Seed empty sets in routine order
+            let descriptor = FetchDescriptor<Exercise>()
+            let exercises = (try? modelContext.fetch(descriptor)) ?? []
+            for (idx, exId) in seed.exerciseOrder.enumerated() {
+                guard let ex = exercises.first(where: { $0.id == exId }) else { continue }
+                let set = ExerciseSet(
+                    exerciseId: ex.id, exerciseName: ex.name,
+                    ordinal: idx, reps: 0, weightKg: 0
+                )
+                set.session = s
+                modelContext.insert(set)
+            }
+        }
         try? modelContext.save()
         session = s
+        routineName = seed?.name ?? ""
         elapsedTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in
             elapsed = Date.now.timeIntervalSince(s.startedAt)
         }
+    }
+
+    private func saveAsRoutine() {
+        guard let session, !(session.sets ?? []).isEmpty else { return }
+        let groups = session.setsByExercise
+        let routine = Routine(
+            name: routineName.isEmpty ? (session.name.isEmpty ? "Routine" : session.name) : routineName,
+            exerciseOrder: groups.map { $0.exerciseId },
+            exerciseNames: groups.map { $0.exerciseName }
+        )
+        modelContext.insert(routine)
+        try? modelContext.save()
     }
 
     private func addExercise(_ exercise: Exercise) {
