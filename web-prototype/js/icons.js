@@ -45,6 +45,11 @@
     /* Dashboard & content icons */
     'flame.fill': '<path fill="currentColor" stroke="none" d="M12 2s4 4 4 8c0 1.7-.7 3-2 4 1-2 0-3-1-3-1.5 0-2 1-2 3 0 1 .5 2 1 3-2 0-4-2-4-5 0-3 2-5 4-10Zm-1 19a5 5 0 1 0 4-9c0 2-1 3-2 3-1 0-1-1-1-2-2 1-3 3-3 5 0 1 1 2 2 3Z"/>',
     'flame': '<path d="M12 2s4 4 4 8c0 4-3 7-4 7-3 0-5-2-5-5 0-3 2-4 3-7 0 2 1 3 2 3"/>',
+
+    'drop.fill': '<path fill="currentColor" stroke="none" d="M12 2c-1 2-7 8-7 13a7 7 0 0 0 14 0c0-5-6-11-7-13Z"/>',
+    'drop': '<path d="M12 3c-1 2-6 7.5-6 12a6 6 0 0 0 12 0c0-4.5-5-10-6-12Z"/>',
+    'figure.run': '<circle cx="14" cy="4" r="2"/><path d="M9 11l3-1 2 3 2 1M11 21l1-6-3-3 2-4M14 21l1-7"/>',
+    'bolt.heart.fill': '<path fill="currentColor" stroke="none" d="M12 21s-7-4.5-9.5-9C1 9 2 5 5.5 5 8 5 9 7 12 9c3-2 4-4 6.5-4C22 5 23 9 21.5 12 19 16.5 12 21 12 21Z"/><polyline stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none" points="13 8 10 13 14 13 11 17"/>',
     'figure.walk': '<circle cx="13" cy="4" r="2"/><path d="M9 21l3-7-3-3v-3l-2 2-2-1"/><path d="M14 21l-1-7 4-3"/>',
     'scalemass': '<path d="M3 7h18v13H3z"/><circle cx="12" cy="13" r="3.5"/><path d="M12 9.5V13"/>',
     'chart.line.uptrend.xyaxis': '<polyline points="3 17 9 11 13 15 21 7"/><polyline points="14 7 21 7 21 14"/>',

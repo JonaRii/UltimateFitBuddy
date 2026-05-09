@@ -569,10 +569,30 @@
 
   function emptyState(iconName, title, sub) {
     return h('div', { class: 'empty' },
-      svg(iconName, { size: 48, strokeWidth: 1.5 }),
-      h('div', { style: { marginTop: '8px' } }, title),
+      h('div', { class: 'empty-icon' }, svg(iconName, { size: 40, strokeWidth: 1.6 })),
+      h('div', { class: 'empty-title' }, title),
       sub && h('div', { class: 'subtitle' }, sub)
     );
+  }
+
+  /* Apple Activity-style three concentric rings.
+   * `data` = [ {pct, color, label, value, goalUnit}, outer, middle, inner ] */
+  function activityRings(data, centerBig, centerSub) {
+    const wrap = h('div', { class: 'activity-rings' });
+    const safe = (v) => Math.max(0, Math.min(100, v));
+    data.forEach((ring, i) => {
+      wrap.appendChild(h('div', {
+        class: 'activity-ring activity-ring-' + (i + 1),
+        style: { '--pct': safe(ring.pct).toFixed(1), '--color': ring.color }
+      }));
+    });
+    wrap.appendChild(h('div', { class: 'activity-rings-center' },
+      h('div', null,
+        h('div', { class: 'big' }, centerBig),
+        h('div', { class: 'sub' }, centerSub)
+      )
+    ));
+    return wrap;
   }
 
   // ============================================================
@@ -667,16 +687,37 @@
     );
     wrap.appendChild(navBar);
 
-    // Energy + macros card
-    wrap.appendChild(card(
-      h('div', { class: 'row-flex', style: { gap: '20px' } },
-        ring(totals.cal, g.calories, '--macro-calories'),
-        h('div', { style: { flex: '1' } },
-          macroBar('Protein', totals.p, g.protein, '--macro-protein'),
-          macroBar('Carbs', totals.c, g.carbs, '--macro-carbs'),
-          macroBar('Fat', totals.f, g.fat, '--macro-fat')
-        )
+    // Apple Activity-style triple-ring hero: outer = calories, middle =
+    // protein, inner = water (the three independent daily goals).
+    const water = LOGIC.waterTotalForDate(state.waterLog, LOGIC.dateKey(day));
+    const waterGoal = state.goals.waterMl || 2500;
+    const heroRings = activityRings(
+      [
+        { pct: (totals.cal / Math.max(g.calories, 1)) * 100, color: 'var(--macro-calories)' },
+        { pct: (totals.p   / Math.max(g.protein, 1))  * 100, color: 'var(--macro-protein)' },
+        { pct: (water      / Math.max(waterGoal, 1))  * 100, color: 'var(--blue)' }
+      ],
+      Math.round(totals.cal).toLocaleString(),
+      'kcal'
+    );
+    const hero = h('div', { class: 'hero-card', style: { textAlign: 'center' } },
+      h('div', { style: { display: 'flex', justifyContent: 'center', marginBottom: '16px' } },
+        heroRings
+      ),
+      h('div', { class: 'legend-row' },
+        legendCell('Calories', Math.round(totals.cal), Math.round(g.calories), 'kcal', 'var(--macro-calories)'),
+        legendCell('Protein',  Math.round(totals.p),   Math.round(g.protein),  'g',    'var(--macro-protein)'),
+        legendCell('Water',    Math.round(water),      Math.round(waterGoal),  'ml',   'var(--blue)')
       )
+    );
+    wrap.appendChild(hero);
+
+    // Macro breakdown — secondary card for protein/carbs/fat detail
+    wrap.appendChild(card(
+      h('div', { style: { font: '600 13px var(--font)', textTransform: 'uppercase', color: 'var(--label-secondary)', letterSpacing: '0.06em', marginBottom: '12px' } }, 'Macros'),
+      macroBar('Protein', totals.p, g.protein, '--macro-protein'),
+      macroBar('Carbs',   totals.c, g.carbs,   '--macro-carbs'),
+      macroBar('Fat',     totals.f, g.fat,     '--macro-fat')
     ));
 
     // Today's workout
@@ -796,6 +837,20 @@
     );
   }
 
+  function legendCell(label, val, goal, unit, color) {
+    return h('div', { class: 'legend-item', style: { flexDirection: 'column', alignItems: 'flex-start', gap: '4px' } },
+      h('div', { style: { display: 'flex', alignItems: 'center', gap: '6px' } },
+        h('span', { class: 'dot', style: { background: color } }),
+        h('span', { class: 'label' }, label)
+      ),
+      h('div', { style: { display: 'flex', alignItems: 'baseline', gap: '4px' } },
+        h('span', { class: 'value' }, val.toLocaleString()),
+        h('span', { style: { font: '500 11px var(--font)', color: 'var(--label-secondary)', fontVariantNumeric: 'tabular-nums' } },
+          '/ ' + goal.toLocaleString() + (unit ? ' ' + unit : ''))
+      )
+    );
+  }
+
   function weightChart(points) {
     if (points.length === 0) return h('div');
     const w = 358 - 32, hpx = 140;
@@ -897,22 +952,31 @@
       biceps: 'var(--purple)', triceps: 'var(--pink)', traps: 'var(--indigo)',
       quads: 'var(--green)', hamstrings: 'var(--teal)', glutes: 'var(--mint)',
       calves: 'var(--brown)', core: 'var(--yellow)', obliques: 'var(--cyan)',
-      fullBody: 'var(--accent)'
+      fullBody: 'var(--gray)'
     };
     const total = entries.reduce((s, [, v]) => s + v, 0);
     const c = h('div', { class: 'card' });
-    c.appendChild(h('div', { class: 'card-header' },
-      h('span', null, 'This week — volume by muscle'),
-      h('span', { class: 'subtitle', style: { marginLeft: 'auto' } }, Math.round(total) + ' kg total')
+    c.appendChild(h('div', { class: 'card-eyebrow' }, 'This week'));
+    c.appendChild(h('div', { class: 'card-header', style: { marginBottom: '14px' } },
+      h('span', null, 'Volume by muscle'),
+      h('span', {
+        class: 'subtitle',
+        style: { marginLeft: 'auto', fontWeight: '600', fontVariantNumeric: 'tabular-nums' }
+      }, Math.round(total).toLocaleString() + ' kg')
     ));
     for (const [muscle, vol] of entries) {
-      c.appendChild(h('div', { style: { marginBottom: '8px' } },
-        h('div', { style: { display: 'flex', justifyContent: 'space-between', font: '500 13px var(--font)' } },
-          h('span', { style: { color: colors[muscle] || 'var(--label-primary)' } }, capitalize(muscle)),
-          h('span', { class: 'numeric subtitle' }, Math.round(vol).toLocaleString() + ' kg')
+      const colour = colors[muscle] || 'var(--gray)';
+      c.appendChild(h('div', { class: 'muscle-row' },
+        h('div', { class: 'label-row' },
+          h('span', { class: 'dot', style: { background: colour } }),
+          h('span', { class: 'name' }, capitalize(muscle)),
+          h('span', { class: 'vol' }, Math.round(vol).toLocaleString() + ' kg')
         ),
-        h('div', { style: { height: '6px', background: 'var(--fill-secondary)', borderRadius: '3px', overflow: 'hidden', marginTop: '4px' } },
-          h('div', { style: { width: ((vol / max) * 100) + '%', height: '100%', background: colors[muscle] || 'var(--accent)', borderRadius: '3px' } })
+        h('div', { class: 'track' },
+          h('div', {
+            class: 'fill',
+            style: { width: ((vol / max) * 100) + '%', background: colour, color: colour }
+          })
         )
       ));
     }
@@ -1679,17 +1743,21 @@
     const cardioToday = LOGIC.cardioTotalForDate(state.cardio, key);
     const netConsumed = totals.cal;
     const adjustedGoal = g.calories + cardioToday;
-    const left = Math.max(0, Math.round(adjustedGoal - netConsumed));
-    wrap.appendChild(card(
-      h('div', { style: { display: 'flex', alignItems: 'baseline', gap: '6px' } },
-        h('span', { style: { font: '700 36px var(--font)', fontVariantNumeric: 'tabular-nums' } }, Math.round(netConsumed).toLocaleString()),
-        h('span', { class: 'subtitle' }, '/ ' + adjustedGoal.toLocaleString() + ' kcal'),
-        h('span', { style: { marginLeft: 'auto', fontWeight: '500', color: 'var(--label-secondary)' } }, left + ' left')
+    const remaining = Math.round(adjustedGoal - netConsumed);
+    const isOver = remaining < 0;
+    const pillLabel = isOver
+      ? Math.abs(remaining).toLocaleString() + ' over'
+      : remaining.toLocaleString() + ' left';
+    wrap.appendChild(h('div', { class: 'hero-card' },
+      h('div', { class: 'kcal-hero' },
+        h('span', { class: 'num' }, Math.round(netConsumed).toLocaleString()),
+        h('span', { class: 'of' }, '/ ' + adjustedGoal.toLocaleString() + ' kcal'),
+        h('span', { class: 'left-pill' + (isOver ? ' over' : '') }, pillLabel)
       ),
       cardioToday > 0
-        ? h('div', { class: 'subtitle', style: { marginTop: '2px' } }, '+' + Math.round(cardioToday) + ' kcal from cardio')
+        ? h('div', { class: 'subtitle', style: { marginTop: '4px' } }, '+' + Math.round(cardioToday) + ' kcal from cardio')
         : null,
-      h('div', { style: { marginTop: '8px' } },
+      h('div', { style: { marginTop: '14px', position: 'relative' } },
         macroBar('Protein', totals.p, g.protein, '--macro-protein'),
         macroBar('Carbs', totals.c, g.carbs, '--macro-carbs'),
         macroBar('Fat', totals.f, g.fat, '--macro-fat')
@@ -1706,9 +1774,9 @@
     const meals = state.meals[key] || {};
     const slots = [
       ['breakfast', 'Breakfast', 'sun.max.fill', 'bg-yellow'],
-      ['lunch', 'Lunch', 'flame.fill', 'bg-orange'],
+      ['lunch', 'Lunch', 'fork.knife.fill', 'bg-orange'],
       ['dinner', 'Dinner', 'moon.fill', 'bg-indigo'],
-      ['snack', 'Snacks', 'fork.knife.fill', 'bg-green']
+      ['snack', 'Snacks', 'flame.fill', 'bg-green']
     ];
     for (const [key2, label, ic, ic_bg] of slots) {
       const items = meals[key2] || [];
@@ -1725,7 +1793,10 @@
         h('button', { class: 'meal-card-add', onClick: () => openFoodSearch(key2) }, svg('plus', { size: 14, strokeWidth: 2.6 }))
       ));
       if (items.length === 0) {
-        c.appendChild(h('div', { class: 'subtitle', style: { padding: '8px 0' } }, 'Empty'));
+        c.appendChild(h('div', {
+          class: 'subtitle',
+          style: { padding: '6px 0 2px', fontStyle: 'italic' }
+        }, 'Nothing logged yet'));
       } else {
         items.forEach((entry, i) => {
           c.appendChild(h('div', { class: 'food-entry' },
@@ -1755,31 +1826,25 @@
     const goalGlasses = Math.max(1, Math.round(goal / WATER_GLASS_ML));
     const c = h('div', { class: 'meal-card' });
     c.appendChild(h('div', { class: 'meal-card-header' },
-      h('div', { class: 'meal-card-icon bg-blue' }, svg('flame.fill', { size: 16 })),  // placeholder droplet
+      h('div', { class: 'meal-card-icon bg-blue' }, svg('drop.fill', { size: 17 })),
       h('div', { class: 'meal-card-title' }, 'Water'),
       h('div', { class: 'meal-card-cal' }, Math.round(total) + ' / ' + goal + ' ml'),
       h('button', { class: 'meal-card-add', onClick: () => addWater(dateKey, WATER_GLASS_ML) }, svg('plus', { size: 14, strokeWidth: 2.6 }))
     ));
-    // Cup row: filled / unfilled circles
-    const row = h('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '4px' } });
+    const row = h('div', { class: 'water-grid' });
     for (let i = 0; i < goalGlasses; i++) {
       const filled = i < glasses;
       row.appendChild(h('button', {
-        style: {
-          width: '32px', height: '40px',
-          appearance: 'none', border: 0, padding: 0, cursor: 'pointer',
-          borderRadius: '6px',
-          background: filled ? 'var(--blue)' : 'var(--fill-tertiary)',
-          color: filled ? '#fff' : 'var(--label-secondary)',
-          font: '600 12px var(--font)'
-        },
-        onClick: () => setWaterGlasses(dateKey, i + 1)
-      }, '💧'));
+        class: 'water-cell' + (filled ? ' filled' : ''),
+        onClick: () => setWaterGlasses(dateKey, i + 1),
+        title: ((i + 1) * WATER_GLASS_ML) + ' ml',
+        html: filled ? icon('drop.fill', { size: 18 }) : icon('drop', { size: 16, strokeWidth: 1.6 })
+      }));
     }
     c.appendChild(row);
     if (glasses > 0) {
       c.appendChild(h('button', {
-        class: 'btn-link', style: { marginTop: '4px', padding: '4px 0', color: 'var(--red)' },
+        class: 'btn-link', style: { marginTop: '6px', padding: '4px 0', color: 'var(--red)' },
         onClick: () => removeLastWater(dateKey)
       }, 'Remove last'));
     }
@@ -1810,7 +1875,7 @@
     const total = LOGIC.cardioTotalForDate(state.cardio, dateKey);
     const c = h('div', { class: 'meal-card' });
     c.appendChild(h('div', { class: 'meal-card-header' },
-      h('div', { class: 'meal-card-icon bg-orange' }, svg('flame.fill', { size: 16 })),
+      h('div', { class: 'meal-card-icon bg-pink' }, svg('heart.fill', { size: 17 })),
       h('div', { class: 'meal-card-title' }, 'Cardio'),
       entries.length > 0
         ? h('div', { class: 'meal-card-cal' }, '+' + Math.round(total) + ' kcal')
@@ -1818,7 +1883,10 @@
       h('button', { class: 'meal-card-add', onClick: () => openCardioSheet(dateKey) }, svg('plus', { size: 14, strokeWidth: 2.6 }))
     ));
     if (entries.length === 0) {
-      c.appendChild(h('div', { class: 'subtitle', style: { padding: '8px 0' } }, 'No cardio logged'));
+      c.appendChild(h('div', {
+        class: 'subtitle',
+        style: { padding: '6px 0 2px', fontStyle: 'italic' }
+      }, 'No cardio logged'));
     } else {
       entries.forEach((e, i) => {
         c.appendChild(h('div', { class: 'food-entry' },
@@ -2506,6 +2574,22 @@
     const wrap = h('div');
     wrap.appendChild(h('div', { class: 'nav-bar' },
       h('h1', { class: 'nav-large-title' }, 'You')
+    ));
+
+    // Profile summary header — avatar + display name + body stat
+    const latestWeight = state.weights.length > 0
+      ? [...state.weights].sort((a, b) => new Date(b.recordedAt) - new Date(a.recordedAt))[0].kg
+      : null;
+    const initial = (state.user.displayName || '').trim().charAt(0).toUpperCase() || '?';
+    wrap.appendChild(h('div', { class: 'profile-header' },
+      h('div', { class: 'profile-avatar' }, initial),
+      h('div', { class: 'profile-text' },
+        h('div', { class: 'profile-name' }, state.user.displayName || 'Set your display name'),
+        h('div', { class: 'profile-sub' },
+          (state.goals.height ? state.goals.height + ' cm' : '—') +
+          (latestWeight ? ' · ' + latestWeight.toFixed(1) + ' kg' : '')
+        )
+      )
     ));
 
     // User
