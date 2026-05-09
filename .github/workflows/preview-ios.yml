@@ -1,0 +1,199 @@
+name: Live iPhone Preview
+
+# Spins up a GitHub-hosted macOS runner, builds the app, boots the iOS
+# Simulator, runs the open-source `serve-sim` streamer, and exposes it via
+# a Cloudflare quick-tunnel (no account needed). The job prints a public
+# `*.trycloudflare.com` URL into the workflow summary that you can open in
+# any browser to interact with the running simulator.
+#
+# The session runs until you cancel the workflow or the 5h 45m keepalive
+# expires (under the runner's 6h hard limit). Re-trigger any time via the
+# Actions tab → "Live iPhone Preview" → "Run workflow".
+
+on:
+  workflow_dispatch:
+    inputs:
+      device:
+        description: Simulator device
+        type: choice
+        default: iPhone 16 Pro
+        options:
+          - iPhone 16 Pro
+          - iPhone 16
+          - iPhone 15 Pro
+          - iPhone SE (3rd generation)
+      session_minutes:
+        description: How long to keep the tunnel alive (minutes, max 345)
+        type: string
+        default: "120"
+
+jobs:
+  preview:
+    name: Stream simulator
+    runs-on: macos-15
+    timeout-minutes: 350
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select latest installed Xcode
+        run: |
+          ls -1 /Applications | grep -E '^Xcode' | sort -V
+          LATEST=$(ls -1 /Applications | grep -E '^Xcode_[0-9]+(\.[0-9]+)*\.app$' | sort -V | tail -1)
+          if [ -z "$LATEST" ]; then LATEST="Xcode.app"; fi
+          sudo xcode-select -s "/Applications/$LATEST/Contents/Developer"
+          xcodebuild -version
+
+      - name: Install tooling
+        run: |
+          brew install xcodegen cloudflared
+          # serve-sim is npx-runnable; nothing to install globally
+          node --version
+          npm --version
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Build app for simulator
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project UltimateFitBuddy.xcodeproj \
+            -scheme UltimateFitBuddy \
+            -configuration Debug \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build \
+            -sdk iphonesimulator \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY="" \
+            ONLY_ACTIVE_ARCH=NO \
+            build | tee build.log
+          APP_PATH=$(find build -path "*Debug-iphonesimulator/UltimateFitBuddy.app" -type d | head -1)
+          echo "APP_PATH=$APP_PATH" >> "$GITHUB_ENV"
+          echo "Built: $APP_PATH"
+
+      - name: Boot simulator
+        env:
+          DEVICE: ${{ inputs.device }}
+        run: |
+          set -euo pipefail
+          # Use the latest available runtime for the chosen device.
+          UDID=$(xcrun simctl list devices available -j | python3 -c "
+          import json, sys, re
+          data = json.load(sys.stdin)
+          target = '${DEVICE}'
+          best = None
+          for runtime, devices in data['devices'].items():
+              if 'iOS' not in runtime:
+                  continue
+              for d in devices:
+                  if d['name'] == target and d.get('isAvailable', True):
+                      best = (runtime, d['udid'], d['name'])
+          if best:
+              print(best[1])
+          ")
+          if [ -z "$UDID" ]; then
+            echo "Could not find an available '${DEVICE}'. Available devices:"
+            xcrun simctl list devices available
+            exit 1
+          fi
+          echo "Booting $DEVICE ($UDID)"
+          xcrun simctl boot "$UDID" || true
+          xcrun simctl bootstatus "$UDID" -b
+          echo "SIM_UDID=$UDID" >> "$GITHUB_ENV"
+
+      - name: Install + launch app on simulator
+        run: |
+          set -euo pipefail
+          xcrun simctl install "$SIM_UDID" "$APP_PATH"
+          xcrun simctl launch "$SIM_UDID" com.jonatanriise.fitbuddy
+
+      - name: Start serve-sim streamer
+        run: |
+          set -euo pipefail
+          # serve-sim by EvanBacon — MJPEG video + WebSocket input forwarding.
+          # Listens on http://localhost:3000 by default. Run in background and
+          # verify it's reachable before we tunnel it.
+          mkdir -p .preview
+          (npx --yes serve-sim --port 3000 > .preview/serve-sim.log 2>&1 &) || true
+          echo "Waiting for serve-sim to come up…"
+          for i in {1..40}; do
+            if curl -fs http://localhost:3000/ >/dev/null 2>&1; then
+              echo "serve-sim is up after $i*0.5s"
+              break
+            fi
+            sleep 0.5
+          done
+          if ! curl -fs http://localhost:3000/ >/dev/null 2>&1; then
+            echo "serve-sim did not start. Logs:"
+            cat .preview/serve-sim.log || true
+            exit 1
+          fi
+
+      - name: Open Cloudflare quick-tunnel
+        id: tunnel
+        run: |
+          set -euo pipefail
+          # `cloudflared tunnel --url <local>` returns a free, no-auth public
+          # *.trycloudflare.com URL that proxies to localhost:3000.
+          (cloudflared tunnel --url http://localhost:3000 --no-autoupdate \
+              --logfile .preview/cloudflared.log \
+              > .preview/cloudflared.stdout.log 2>&1 &)
+          PUBLIC_URL=""
+          for i in {1..60}; do
+            sleep 1
+            PUBLIC_URL=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' \
+                .preview/cloudflared.log .preview/cloudflared.stdout.log 2>/dev/null \
+                | head -1 || true)
+            if [ -n "$PUBLIC_URL" ]; then break; fi
+          done
+          if [ -z "$PUBLIC_URL" ]; then
+            echo "Cloudflared didn't print a public URL. Logs:"
+            cat .preview/cloudflared.log .preview/cloudflared.stdout.log || true
+            exit 1
+          fi
+          echo "Public URL: $PUBLIC_URL"
+          echo "public_url=$PUBLIC_URL" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Live iPhone preview"
+            echo ""
+            echo "**Open this URL in your browser to interact with the running simulator:**"
+            echo ""
+            echo "[$PUBLIC_URL]($PUBLIC_URL)"
+            echo ""
+            echo "Device: \`${{ inputs.device }}\`  ·  Session: ~${{ inputs.session_minutes }} min  ·  App bundle: \`com.jonatanriise.fitbuddy\`"
+            echo ""
+            echo "Cancel this run from the Actions UI to free the runner immediately, or it auto-stops at the session deadline."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Keep alive
+        env:
+          MINUTES: ${{ inputs.session_minutes }}
+        run: |
+          # Cap at 345 min so we stay safely under the 6h runner ceiling.
+          MAX=345
+          M=${MINUTES:-120}
+          if [ "$M" -gt "$MAX" ]; then M=$MAX; fi
+          SECS=$((M * 60))
+          echo "Holding the tunnel open for $M minutes ($SECS seconds)…"
+          echo "Public URL: ${{ steps.tunnel.outputs.public_url }}"
+          # Light heartbeat so the log stays alive and we can observe simulator state.
+          while [ $SECS -gt 0 ]; do
+            sleep 60
+            SECS=$((SECS - 60))
+            REMAIN=$((SECS / 60))
+            BOOTED=$(xcrun simctl list devices booted | grep -c Booted || true)
+            echo "[$(date +%H:%M:%S)] $REMAIN min remaining · simulators booted: $BOOTED"
+          done
+          echo "Session deadline reached. Tearing down."
+
+      - name: Capture diagnostics on failure
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@v4
+        with:
+          name: preview-diagnostics
+          path: |
+            .preview/
+            build.log
+          retention-days: 7
