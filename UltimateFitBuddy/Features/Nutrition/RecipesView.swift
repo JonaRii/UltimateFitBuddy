@@ -92,6 +92,12 @@ struct RecipeEditorView: View {
         )
     }
 
+    private func ingredientLabel(at i: Int) -> String {
+        let g = Int(grams[i])
+        let cal = Int((food(for: foodIds[i])?.cal ?? 0) * grams[i] / 100)
+        return "\(g) g · \(cal) kcal"
+    }
+
     var body: some View {
         Form {
             Section("Recipe") {
@@ -100,14 +106,11 @@ struct RecipeEditorView: View {
             }
             Section {
                 ForEach(0..<foodIds.count, id: \.self) { i in
-                    let f = food(for: foodIds[i])
-                    HStack {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(f?.name ?? "Missing food").font(.subheadline)
-                            Text("\(Int(grams[i])) g · \(Int((f?.cal ?? 0)) * Int(grams[i]) / 100) kcal")
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
-                        Spacer()
+                    let foodName = food(for: foodIds[i])?.name ?? "Missing food"
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(foodName).font(.subheadline)
+                        Text(ingredientLabel(at: i))
+                            .font(.caption).foregroundStyle(.secondary)
                     }
                 }
                 .onDelete { offsets in
@@ -191,49 +194,59 @@ struct IngredientPicker: View {
 
     var body: some View {
         NavigationStack {
-            if let pf = pendingFood {
-                Form {
-                    Section(pf.name) {
-                        HStack {
-                            Text("Grams")
-                            Spacer()
-                            TextField("g", value: $grams, format: .number)
-                                .keyboardType(.decimalPad)
-                                .multilineTextAlignment(.trailing)
-                        }
-                    }
-                    Button("Add") {
-                        onPick(pf, grams)
-                        dismiss()
-                    }
+            Group {
+                if let pf = pendingFood {
+                    portionForm(food: pf)
+                } else {
+                    foodList
                 }
-                .navigationTitle("Portion")
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .topBarLeading) {
-                        Button("Back") { pendingFood = nil }
-                    }
+            }
+        }
+    }
+
+    private func portionForm(food: Food) -> some View {
+        Form {
+            Section(food.name) {
+                HStack {
+                    Text("Grams")
+                    Spacer()
+                    TextField("g", value: $grams, format: .number)
+                        .keyboardType(.decimalPad)
+                        .multilineTextAlignment(.trailing)
                 }
-            } else {
-                List(filtered) { f in
-                    Button {
-                        pendingFood = f
-                        grams = f.servingSizeG > 0 ? f.servingSizeG : 100
-                    } label: {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(f.name).font(.headline).foregroundStyle(.primary)
-                            Text("\(Int(f.cal)) kcal/100g")
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
-                    }
+            }
+            Button("Add") {
+                onPick(food, grams)
+                dismiss()
+            }
+        }
+        .navigationTitle("Portion")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button("Back") { pendingFood = nil }
+            }
+        }
+    }
+
+    private var foodList: some View {
+        List(filtered) { f in
+            Button {
+                pendingFood = f
+                grams = f.servingSizeG > 0 ? f.servingSizeG : 100
+            } label: {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(f.name).font(.headline).foregroundStyle(.primary)
+                    Text("\(Int(f.cal)) kcal/100g")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
-                .searchable(text: $query, prompt: "Search foods")
-                .navigationTitle("Pick ingredient")
-                .toolbar {
-                    ToolbarItem(placement: .topBarLeading) {
-                        Button("Cancel") { dismiss() }
-                    }
-                }
+            }
+        }
+        .searchable(text: $query, prompt: "Search foods")
+        .navigationTitle("Pick ingredient")
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button("Cancel") { dismiss() }
             }
         }
     }

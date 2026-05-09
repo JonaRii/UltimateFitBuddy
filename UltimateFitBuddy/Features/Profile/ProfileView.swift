@@ -51,6 +51,18 @@ struct ProfileView: View {
                         ), unit: "kg")
                     }
                 }
+                Section("Library") {
+                    NavigationLink {
+                        RecipesListView()
+                    } label: {
+                        Label("Recipes", systemImage: "fork.knife")
+                    }
+                    NavigationLink {
+                        RoutinesListView()
+                    } label: {
+                        Label("Routines", systemImage: "list.bullet.rectangle")
+                    }
+                }
                 Section("Apple Health") {
                     HStack {
                         Image(systemName: appState.healthKit.isAuthorized ? "checkmark.circle.fill" : "questionmark.circle")

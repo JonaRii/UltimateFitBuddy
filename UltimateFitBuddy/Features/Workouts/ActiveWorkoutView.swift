@@ -88,7 +88,7 @@ struct ActiveWorkoutView: View {
             ForEach(groups, id: \.exerciseId) { group in
                 Section(header: Text(group.exerciseName).font(.headline)) {
                     ForEach(group.sets) { aSet in
-                        SetRowView(entry: aSet, onComplete: {
+                        SetRowView(entry: aSet, isPR: isPR(aSet), onComplete: {
                             aSet.isCompleted = true
                             try? modelContext.save()
                             restSeconds = 90
@@ -195,6 +195,28 @@ struct ActiveWorkoutView: View {
         }
         elapsedTimer?.invalidate()
         dismiss()
+    }
+
+    /// Personal record check: current set is a PR if its estimated 1RM
+    /// (Epley) strictly beats every prior completed set for the same
+    /// exercise. Warmup sets are ignored.
+    private func isPR(_ s: ExerciseSet) -> Bool {
+        guard s.isCompleted, !s.isWarmup else { return false }
+        guard let exId = s.exerciseId, s.weightKg > 0, s.reps > 0 else { return false }
+        let descriptor = FetchDescriptor<ExerciseSet>(
+            predicate: #Predicate { $0.exerciseId == exId && $0.isCompleted == true }
+        )
+        let priors = (try? modelContext.fetch(descriptor)) ?? []
+        let oneRm = s.weightKg * (1.0 + Double(s.reps) / 30.0)
+        let cutoff = s.performedAt
+        for p in priors {
+            if p.id == s.id { continue }
+            if p.isWarmup { continue }
+            if p.performedAt >= cutoff { continue }
+            let prRm = p.weightKg * (1.0 + Double(p.reps) / 30.0)
+            if prRm >= oneRm { return false }
+        }
+        return true
     }
 
     private func formatElapsed(_ t: TimeInterval) -> String {
