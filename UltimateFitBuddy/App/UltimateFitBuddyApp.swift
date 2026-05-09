@@ -18,12 +18,12 @@ struct UltimateFitBuddyApp: App {
 }
 
 @Observable
+@MainActor
 final class AppState {
     var didBootstrap = false
     var lastError: String?
     let healthKit = HealthKitService()
 
-    @MainActor
     func bootstrap() async {
         guard !didBootstrap else { return }
         let context = AppModelContainer.shared.container.mainContext
