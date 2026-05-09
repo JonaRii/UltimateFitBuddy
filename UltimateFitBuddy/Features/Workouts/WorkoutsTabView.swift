@@ -20,6 +20,9 @@ struct WorkoutsTabView: View {
                     NavigationLink(destination: ExerciseLibraryView()) {
                         Label("Exercise library", systemImage: "books.vertical")
                     }
+                    NavigationLink(destination: WorkoutCalendarView()) {
+                        Label("Calendar", systemImage: "calendar")
+                    }
                 }
                 Section("History") {
                     if workouts.isEmpty {
