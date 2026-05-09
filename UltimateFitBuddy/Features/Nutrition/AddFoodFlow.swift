@@ -39,6 +39,9 @@ struct AddFoodFlow: View {
                     NavigationLink(destination: PickRecipeView(onPick: addRecipeEntry)) {
                         Label("Recipe", systemImage: "fork.knife")
                     }
+                    NavigationLink(destination: PickSavedMealView(onPick: addSavedMealEntries)) {
+                        Label("Saved meal", systemImage: "bookmark")
+                    }
                     NavigationLink(destination: ManualFoodEditor(onSave: { food in
                         addEntry(food: food, grams: food.servingSizeG)
                     })) {
@@ -111,6 +114,23 @@ struct AddFoodFlow: View {
                 statusMessage = "Couldn't find \(code) in Open Food Facts. Add manually?"
             }
         }
+    }
+
+    private func addSavedMealEntries(saved: SavedMeal) {
+        let meal = ensureMeal()
+        let descriptor = FetchDescriptor<Food>()
+        let allFoods = (try? modelContext.fetch(descriptor)) ?? []
+        for i in 0..<min(saved.foodIds.count, saved.gramsList.count) {
+            guard let food = allFoods.first(where: { $0.id == saved.foodIds[i] }) else { continue }
+            let entry = FoodEntry(food: food, gramsConsumed: saved.gramsList[i])
+            entry.consumedAt = .now
+            entry.meal = meal
+            modelContext.insert(entry)
+        }
+        try? modelContext.save()
+        Task { await appState.healthKit.refreshTodayMetrics() }
+        onClose()
+        dismiss()
     }
 
     private func addRecipeEntry(recipe: Recipe, servings: Double) {
@@ -236,6 +256,37 @@ struct FoodPortionSheet: View {
                 }
             }
         }
+    }
+}
+
+struct PickSavedMealView: View {
+    @Environment(\.dismiss) private var dismiss
+    @Query(sort: [SortDescriptor(\SavedMeal.createdAt, order: .reverse)]) private var savedMeals: [SavedMeal]
+    var onPick: (SavedMeal) -> Void
+
+    var body: some View {
+        List(savedMeals) { m in
+            Button {
+                onPick(m)
+                dismiss()
+            } label: {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(m.name).font(.headline).foregroundStyle(.primary)
+                    Text("\(m.foodIds.count) items")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+        }
+        .overlay {
+            if savedMeals.isEmpty {
+                ContentUnavailableView(
+                    "No saved meals",
+                    systemImage: "bookmark",
+                    description: Text("Tap the bookmark icon on a meal section to save its items as a reusable combo.")
+                )
+            }
+        }
+        .navigationTitle("Pick saved meal")
     }
 }
 
