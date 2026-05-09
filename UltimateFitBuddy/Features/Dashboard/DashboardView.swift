@@ -39,12 +39,50 @@ struct DashboardView: View {
         return allWorkouts.first { $0.startedAt >= start }
     }
 
+    private var todayWaterMl: Int {
+        let start = startOfDay
+        let end = endOfDay
+        let descriptor = FetchDescriptor<WaterEntry>(
+            predicate: #Predicate { $0.consumedAt >= start && $0.consumedAt < end }
+        )
+        return (try? modelContext.fetch(descriptor))?.reduce(0) { $0 + $1.ml } ?? 0
+    }
+
+    private var todayCardioKcal: Int {
+        let start = startOfDay
+        let end = endOfDay
+        let descriptor = FetchDescriptor<CardioEntry>(
+            predicate: #Predicate { $0.performedAt >= start && $0.performedAt < end }
+        )
+        return (try? modelContext.fetch(descriptor))?.reduce(0) { $0 + $1.caloriesBurned } ?? 0
+    }
+
+    private var streakDays: Int {
+        // Consecutive days back from today with at least one meal entry.
+        var count = 0
+        let cal = Calendar.current
+        var probe = cal.startOfDay(for: .now)
+        while count < 365 {
+            let next = cal.date(byAdding: .day, value: 1, to: probe) ?? probe
+            let descriptor = FetchDescriptor<Meal>(
+                predicate: #Predicate { $0.date >= probe && $0.date < next }
+            )
+            let meals = (try? modelContext.fetch(descriptor)) ?? []
+            let hasFood = meals.contains { ($0.entries ?? []).isEmpty == false }
+            if !hasFood { break }
+            count += 1
+            probe = cal.date(byAdding: .day, value: -1, to: probe) ?? probe
+        }
+        return count
+    }
+
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 16) {
                     headerCard
                     calorieMacroCard
+                    quickStatsRow
                     workoutCard
                     healthKitCard
                     weightCard
@@ -56,6 +94,38 @@ struct DashboardView: View {
             .background(Color(.systemGroupedBackground))
             .refreshable { await appState.healthKit.refreshTodayMetrics() }
         }
+    }
+
+    private var quickStatsRow: some View {
+        let goalWater = user?.waterGoalMl ?? 2500
+        let streak = streakDays
+        return HStack(spacing: 12) {
+            statTile(
+                icon: "drop.fill", color: AppTheme.fatColor,
+                value: "\(todayWaterMl) ml", label: "of \(goalWater)"
+            )
+            statTile(
+                icon: "flame.fill", color: AppTheme.warning,
+                value: todayCardioKcal > 0 ? "+\(todayCardioKcal)" : "—",
+                label: "cardio kcal"
+            )
+            statTile(
+                icon: "calendar", color: AppTheme.accent,
+                value: streak > 0 ? "\(streak)d" : "—",
+                label: "streak"
+            )
+        }
+    }
+
+    private func statTile(icon: String, color: Color, value: String, label: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Image(systemName: icon).foregroundStyle(color)
+            Text(value).font(.title3.bold().monospacedDigit())
+            Text(label).font(.caption).foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 
     private var headerCard: some View {
