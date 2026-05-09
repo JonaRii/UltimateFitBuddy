@@ -52,9 +52,10 @@
     goals: {
       calories: 2200, protein: 160, carbs: 220, fat: 70,
       height: 180, weight: 80,
-      waterMl: 2500
+      waterMl: 2500,
+      activityLevel: 1.55  // 1.2 sedentary → 1.9 very active
     },
-    user: { displayName: '' },
+    user: { displayName: '', sex: 'male', birthYear: 1995 },
     meals: {},           // yyyy-mm-dd → { breakfast: [], lunch: [], dinner: [], snack: [] }
     workouts: [],        // [{ id, startedAt, endedAt, name, sets: [...] }]
     weights: [],         // [{ kg, recordedAt }]
@@ -67,6 +68,11 @@
     waterLog: {},        // yyyy-mm-dd → [{ ml, at }]
     cardio: {},          // yyyy-mm-dd → [{ id, type, minutes, kcal, at }]
     bodyMeasurements: [],// [{ kind, value, recordedAt }] kind: chest/arm/waist/thigh/bodyFat/etc
+    bodyComp: [],        // full body-composition entries (InBody / scale / manual)
+    calipers: [],        // [{ id, recordedAt, method, sites:{...}, age, sex, computedBf }]
+    fitnessTests: [],    // [{ id, recordedAt, kind, value, unit, notes }]
+    recoveryLogs: [],    // [{ id, recordedAt, hrvMs, restingHR, sleepHours, mood }]
+    bestLifts: { squat: 0, bench: 0, deadlift: 0 }, // for Wilks/DOTS/IPF GL
     onboarded: false,    // first-launch onboarding seen
     activeWorkoutId: null
   });
@@ -92,7 +98,12 @@
       customExercises: Array.isArray(stored.customExercises) ? stored.customExercises : def.customExercises,
       recipes: Array.isArray(stored.recipes) ? stored.recipes : def.recipes,
       savedMeals: Array.isArray(stored.savedMeals) ? stored.savedMeals : def.savedMeals,
-      bodyMeasurements: Array.isArray(stored.bodyMeasurements) ? stored.bodyMeasurements : def.bodyMeasurements
+      bodyMeasurements: Array.isArray(stored.bodyMeasurements) ? stored.bodyMeasurements : def.bodyMeasurements,
+      bodyComp: Array.isArray(stored.bodyComp) ? stored.bodyComp : def.bodyComp,
+      calipers: Array.isArray(stored.calipers) ? stored.calipers : def.calipers,
+      fitnessTests: Array.isArray(stored.fitnessTests) ? stored.fitnessTests : def.fitnessTests,
+      recoveryLogs: Array.isArray(stored.recoveryLogs) ? stored.recoveryLogs : def.recoveryLogs,
+      bestLifts: { ...def.bestLifts, ...(stored.bestLifts || {}) }
     };
   }
   let state = loadState();
@@ -281,6 +292,25 @@
       };
     },
 
+    /* Weekly per-muscle volume (kg) for the last `days` days.
+     * Returns Map<muscle, kg>. Drops warmup sets and bodyweight (weight=0). */
+    weeklyMuscleVolume(workouts, exercises, days = 7) {
+      const cutoff = Date.now() - days * 86400000;
+      const exMap = new Map(exercises.map(e => [e.id, e]));
+      const out = new Map();
+      for (const w of workouts) {
+        if (new Date(w.startedAt).getTime() < cutoff) continue;
+        for (const s of (w.sets || [])) {
+          if (!s.completed || s.isWarmup) continue;
+          const ex = exMap.get(s.exerciseId);
+          if (!ex || !s.weight || !s.reps) continue;
+          const vol = s.weight * s.reps;
+          out.set(ex.muscle, (out.get(ex.muscle) || 0) + vol);
+        }
+      }
+      return out;
+    },
+
     /* Streak: number of consecutive days up to today that have at least one
      * logged meal entry. */
     mealStreak(meals, today) {
@@ -296,6 +326,141 @@
         d.setDate(d.getDate() - 1);
       }
       return count;
+    },
+
+    // ============================================================
+    // Body composition math
+    // ============================================================
+
+    /* Jackson-Pollock 3-site body density (Men): chest, abdomen, thigh, age. */
+    jp3Male(chest, abdomen, thigh, age) {
+      const sum = chest + abdomen + thigh;
+      const bd = 1.10938 - 0.0008267 * sum + 0.0000016 * sum * sum - 0.0002574 * age;
+      return 495 / bd - 450;
+    },
+    /* Jackson-Pollock 3-site body fat % (Women): triceps, suprailiac, thigh, age. */
+    jp3Female(triceps, suprailiac, thigh, age) {
+      const sum = triceps + suprailiac + thigh;
+      const bd = 1.0994921 - 0.0009929 * sum + 0.0000023 * sum * sum - 0.0001392 * age;
+      return 495 / bd - 450;
+    },
+    /* Jackson-Pollock 7-site body fat % (Men): chest, abdomen, thigh, triceps, subscapular, suprailiac, midaxillary, age. */
+    jp7Male(c, ab, th, tr, sub, sui, mid, age) {
+      const sum = c + ab + th + tr + sub + sui + mid;
+      const bd = 1.112 - 0.00043499 * sum + 0.00000055 * sum * sum - 0.00028826 * age;
+      return 495 / bd - 450;
+    },
+    jp7Female(c, ab, th, tr, sub, sui, mid, age) {
+      const sum = c + ab + th + tr + sub + sui + mid;
+      const bd = 1.097 - 0.00046971 * sum + 0.00000056 * sum * sum - 0.00012828 * age;
+      return 495 / bd - 450;
+    },
+
+    /* US Navy method (Imperial inches). */
+    usNavyMale(waistIn, neckIn, heightIn) {
+      return 86.010 * Math.log10(waistIn - neckIn) - 70.041 * Math.log10(heightIn) + 36.76;
+    },
+    usNavyFemale(waistIn, hipIn, neckIn, heightIn) {
+      return 163.205 * Math.log10(waistIn + hipIn - neckIn) - 97.684 * Math.log10(heightIn) - 78.387;
+    },
+
+    /* BMI: weight in kg, height in cm. */
+    bmi(weightKg, heightCm) {
+      const m = heightCm / 100;
+      return m > 0 ? weightKg / (m * m) : 0;
+    },
+
+    /* FFMI = LBM / height². LBM = weight * (1 - BF%/100). */
+    ffmi(weightKg, heightCm, bodyFatPct) {
+      const m = heightCm / 100;
+      if (m <= 0) return 0;
+      const lbm = weightKg * (1 - bodyFatPct / 100);
+      return lbm / (m * m);
+    },
+    /* Adjusted FFMI normalises for height (Kouri 1995). */
+    ffmiAdjusted(weightKg, heightCm, bodyFatPct) {
+      const m = heightCm / 100;
+      const ffmi = LOGIC.ffmi(weightKg, heightCm, bodyFatPct);
+      return ffmi + 6.1 * (1.8 - m);
+    },
+
+    waistHipRatio(waistCm, hipCm) {
+      return hipCm > 0 ? waistCm / hipCm : 0;
+    },
+    waistHeightRatio(waistCm, heightCm) {
+      return heightCm > 0 ? waistCm / heightCm : 0;
+    },
+    /* Mosteller body surface area in m². */
+    bodySurfaceArea(weightKg, heightCm) {
+      return Math.sqrt((weightKg * heightCm) / 3600);
+    },
+
+    /* BMR: Mifflin–St Jeor (kcal/day). sex: 'male' or 'female'. */
+    bmrMifflin(weightKg, heightCm, age, sex) {
+      const base = 10 * weightKg + 6.25 * heightCm - 5 * age;
+      return base + (sex === 'male' ? 5 : -161);
+    },
+    /* BMR: Katch-McArdle (kcal/day). Lean-mass aware. */
+    bmrKatchMcArdle(leanMassKg) {
+      return 370 + 21.6 * leanMassKg;
+    },
+    tdee(bmr, activity = 1.55) {
+      return bmr * activity;
+    },
+
+    /* VO2 max estimate from age + resting HR (Uth–Sørensen–Overgaard 2004). */
+    vo2maxFromRHR(age, restingHR) {
+      if (restingHR <= 0) return 0;
+      return 15.3 * (220 - age) / restingHR;
+    },
+    /* Cooper 12-minute test, distance in meters. */
+    vo2maxFromCooper(meters) {
+      return (meters - 504.9) / 44.73;
+    },
+
+    /* Wilks (1994) — the classic powerlifting score. Uses 500 in numerator
+     * and the original published polynomial coefficients. */
+    wilks(totalKg, bwKg, sex = 'male') {
+      const coeffs = sex === 'female'
+        ? { a: 594.31747775582, b: -27.23842536447, c: 0.82112226871, d: -0.00930733913, e: 4.731582e-5,  f: -9.054e-8 }
+        : { a: -216.0475144,    b: 16.2606339,      c: -0.002388645, d: -0.00113732,    e: 7.01863e-6,   f: -1.291e-8 };
+      const { a, b, c, d, e, f } = coeffs;
+      const denom = a + b * bwKg + c * bwKg ** 2 + d * bwKg ** 3 + e * bwKg ** 4 + f * bwKg ** 5;
+      return denom > 0 ? (500 * totalKg) / denom : 0;
+    },
+    /* DOTS — total in kg, BW in kg. */
+    dots(totalKg, bwKg, sex = 'male') {
+      const coeffs = sex === 'female'
+        ? [-57.96288, 13.6175032, -0.1126655495, 0.0005158568, -0.0000010706 ]
+        : [-307.75076, 24.0900756, -0.1918759221, 0.0007391293, -0.000001093];
+      const [a, b, c, d, e] = coeffs;
+      const denom = a + b * bwKg + c * bwKg ** 2 + d * bwKg ** 3 + e * bwKg ** 4;
+      return denom !== 0 ? (500 * totalKg) / denom : 0;
+    },
+    /* IPF GL points, classic raw — totalKg, bwKg, sex. */
+    ipfGL(totalKg, bwKg, sex = 'male') {
+      const coeffs = sex === 'female'
+        ? { A: 610.32796, B: 1045.59282, C: 0.03048 }
+        : { A: 1199.72839, B: 1025.18162, C: 0.00921 };
+      const { A, B, C } = coeffs;
+      const denom = A - B * Math.exp(-C * bwKg);
+      return denom > 0 ? (100 * totalKg) / denom : 0;
+    },
+
+    /* Adaptive TDEE: observed expenditure from rolling weight + intake.
+     * windowDays of weight + meal data; returns kcal/day estimate.
+     * Standard formula:
+     *   TDEE = avgIntake - (deltaWeightKg * 7700) / windowDays */
+    adaptiveTDEE(weightSeries, calorieSeries) {
+      if (weightSeries.length < 2 || calorieSeries.length === 0) return null;
+      const avgIntake = calorieSeries.reduce((s, x) => s + x, 0) / calorieSeries.length;
+      const w0 = weightSeries[0].kg;
+      const wN = weightSeries[weightSeries.length - 1].kg;
+      const days = Math.max(1, Math.round(
+        (new Date(weightSeries[weightSeries.length - 1].at) - new Date(weightSeries[0].at)) / 86400000
+      ));
+      const deltaKcal = (wN - w0) * 7700;
+      return avgIntake - deltaKcal / days;
     },
 
     /* Best estimated 1RM per session, sorted by date. */
@@ -698,6 +863,12 @@
     }));
 
     const sorted = [...state.workouts].sort((a, b) => new Date(b.startedAt) - new Date(a.startedAt));
+    // Weekly muscle-volume chart
+    const muscleVol = LOGIC.weeklyMuscleVolume(state.workouts, allExercises(), 7);
+    if (muscleVol.size > 0) {
+      wrap.appendChild(muscleVolumeCard(muscleVol));
+    }
+
     if (sorted.length === 0) {
       wrap.appendChild(emptyState('dumbbell', 'No workouts logged', 'Tap Start empty workout above to begin.'));
     } else {
@@ -716,6 +887,36 @@
       }));
     }
     return wrap;
+  }
+
+  function muscleVolumeCard(volMap) {
+    const entries = [...volMap.entries()].sort((a, b) => b[1] - a[1]);
+    const max = entries[0]?.[1] || 1;
+    const colors = {
+      chest: 'var(--red)', back: 'var(--blue)', shoulders: 'var(--orange)',
+      biceps: 'var(--purple)', triceps: 'var(--pink)', traps: 'var(--indigo)',
+      quads: 'var(--green)', hamstrings: 'var(--teal)', glutes: 'var(--mint)',
+      calves: 'var(--brown)', core: 'var(--yellow)', obliques: 'var(--cyan)',
+      fullBody: 'var(--accent)'
+    };
+    const total = entries.reduce((s, [, v]) => s + v, 0);
+    const c = h('div', { class: 'card' });
+    c.appendChild(h('div', { class: 'card-header' },
+      h('span', null, 'This week — volume by muscle'),
+      h('span', { class: 'subtitle', style: { marginLeft: 'auto' } }, Math.round(total) + ' kg total')
+    ));
+    for (const [muscle, vol] of entries) {
+      c.appendChild(h('div', { style: { marginBottom: '8px' } },
+        h('div', { style: { display: 'flex', justifyContent: 'space-between', font: '500 13px var(--font)' } },
+          h('span', { style: { color: colors[muscle] || 'var(--label-primary)' } }, capitalize(muscle)),
+          h('span', { class: 'numeric subtitle' }, Math.round(vol).toLocaleString() + ' kg')
+        ),
+        h('div', { style: { height: '6px', background: 'var(--fill-secondary)', borderRadius: '3px', overflow: 'hidden', marginTop: '4px' } },
+          h('div', { style: { width: ((vol / max) * 100) + '%', height: '100%', background: colors[muscle] || 'var(--accent)', borderRadius: '3px' } })
+        )
+      ));
+    }
+    return c;
   }
 
   function startNewWorkout(seed) {
@@ -2393,6 +2594,13 @@
         }),
         listRow({
           icon: 'scalemass', iconBg: 'bg-blue',
+          title: 'Body composition',
+          subtitle: state.bodyComp.length + ' entries · InBody / scale / calipers',
+          accessory: 'chevron',
+          onClick: openBodyCompositionHub
+        }),
+        listRow({
+          icon: 'square.and.pencil', iconBg: 'bg-teal',
           title: 'Body measurements',
           subtitle: state.bodyMeasurements.length + ' entries',
           accessory: 'chevron',
@@ -2551,6 +2759,648 @@
       title: kind.label,
       leading: h('button', { class: 'btn-link', onClick: () => { closeSheet(); openBodyMeasurements(); } }, '‹ Back'),
       body
+    });
+  }
+
+  // ============================================================
+  // Body Composition hub
+  // ============================================================
+  function userAge() {
+    const y = state.user?.birthYear;
+    if (!y) return 30;
+    return new Date().getFullYear() - y;
+  }
+  function latestBodyComp() {
+    if (state.bodyComp.length === 0) return null;
+    return [...state.bodyComp].sort((a,b) => new Date(b.recordedAt) - new Date(a.recordedAt))[0];
+  }
+  function latestWeight() {
+    const bc = latestBodyComp();
+    if (bc?.weightKg) return bc.weightKg;
+    if (state.weights.length > 0) return state.weights[state.weights.length-1].kg;
+    return state.goals.weight || 80;
+  }
+  function latestBodyFat() {
+    const bc = latestBodyComp();
+    if (bc?.bodyFatPct != null) return bc.bodyFatPct;
+    const cal = [...state.calipers].sort((a,b) => new Date(b.recordedAt) - new Date(a.recordedAt))[0];
+    return cal?.computedBf ?? null;
+  }
+
+  function openBodyCompositionHub() {
+    function build() {
+      const body = h('div');
+      const bc = latestBodyComp();
+      const weight = latestWeight();
+      const bfPct = latestBodyFat();
+      const heightCm = state.goals.height || 180;
+      const age = userAge();
+      const sex = state.user?.sex || 'male';
+      const lean = bfPct != null ? weight * (1 - bfPct / 100) : (bc?.leanMassKg || 0);
+      const bmi = LOGIC.bmi(weight, heightCm);
+      const ffmi = bfPct != null ? LOGIC.ffmi(weight, heightCm, bfPct) : null;
+      const ffmiAdj = bfPct != null ? LOGIC.ffmiAdjusted(weight, heightCm, bfPct) : null;
+      const bmrM = LOGIC.bmrMifflin(weight, heightCm, age, sex);
+      const bmrK = lean > 0 ? LOGIC.bmrKatchMcArdle(lean) : null;
+      const tdee = LOGIC.tdee(bmrK || bmrM, state.goals.activityLevel || 1.55);
+      const adapt = computeAdaptiveTDEE();
+
+      // Snapshot card
+      body.appendChild(h('div', { class: 'card' },
+        h('div', { class: 'card-header' }, 'Snapshot'),
+        h('div', { class: 'row-flex', style: { gap: '20px', alignItems: 'flex-start' } },
+          metricCell('flame.fill', '--accent', weight ? weight.toFixed(1) + ' kg' : '—', 'weight'),
+          metricCell('chart.bar.fill', '--blue', bfPct != null ? bfPct.toFixed(1) + '%' : '—', 'body fat'),
+          metricCell('dumbbell.fill', '--orange', lean ? lean.toFixed(1) + ' kg' : '—', 'lean mass')
+        ),
+        h('div', { class: 'row-flex', style: { gap: '20px', alignItems: 'flex-start', marginTop: '12px' } },
+          metricCell('chart.line.uptrend.xyaxis', '--purple', bmi ? bmi.toFixed(1) : '—', 'BMI'),
+          metricCell('flame.fill', '--orange', ffmi ? ffmi.toFixed(1) : '—', 'FFMI'),
+          metricCell('flame.fill', '--red', ffmiAdj ? ffmiAdj.toFixed(1) : '—', 'FFMI adj')
+        )
+      ));
+
+      // Trend charts
+      if (state.weights.length >= 3) {
+        const points = state.weights.map(w => ({ x: new Date(w.recordedAt).getTime(), y: w.kg }));
+        body.appendChild(progressChart('Weight (' + state.weights.length + ' entries)', points, 'kg', 'var(--accent)'));
+      }
+      const bfSeries = [...state.calipers, ...state.bodyComp.map(b => ({ recordedAt: b.recordedAt, computedBf: b.bodyFatPct }))]
+        .filter(x => typeof x.computedBf === 'number')
+        .map(x => ({ x: new Date(x.recordedAt).getTime(), y: x.computedBf }))
+        .sort((a, b) => a.x - b.x);
+      if (bfSeries.length >= 2) {
+        body.appendChild(progressChart('Body fat % over time', bfSeries, '%', 'var(--blue)'));
+      }
+      const smmSeries = state.bodyComp.filter(b => typeof b.smmKg === 'number')
+        .map(b => ({ x: new Date(b.recordedAt).getTime(), y: b.smmKg }))
+        .sort((a, b) => a.x - b.x);
+      if (smmSeries.length >= 2) {
+        body.appendChild(progressChart('Skeletal muscle mass (kg)', smmSeries, 'kg', 'var(--orange)'));
+      }
+
+      // Metabolism
+      body.appendChild(listSection({
+        header: 'Metabolism',
+        rows: [
+          listRow({ title: 'BMR (Mifflin-St Jeor)', accessory: Math.round(bmrM) + ' kcal' }),
+          listRow({ title: 'BMR (Katch-McArdle)', accessory: bmrK ? Math.round(bmrK) + ' kcal' : 'needs body-fat %' }),
+          listRow({ title: 'TDEE (formula)', subtitle: 'BMR × ' + (state.goals.activityLevel || 1.55), accessory: Math.round(tdee) + ' kcal' }),
+          listRow({
+            title: 'TDEE (observed)',
+            subtitle: adapt ? '7-day weight + intake' : 'log weight + meals 7+ days',
+            accessory: adapt ? Math.round(adapt) + ' kcal' : '—'
+          })
+        ],
+        footer: 'Observed TDEE adapts MacroFactor-style — your own intake and weight history drive the estimate, no algorithm guessing.'
+      }));
+
+      // Anthropometry
+      const lastByKind = (kind) => {
+        const arr = state.bodyMeasurements.filter(m => m.kind === kind || (kind === 'weight' && m.weightKg > 0))
+          .sort((a, b) => new Date(b.recordedAt) - new Date(a.recordedAt));
+        const v = arr[0];
+        if (!v) return null;
+        return kind === 'weight' && v.weightKg > 0 ? v.weightKg : v.value;
+      };
+      const waist = lastByKind('waist'), hips = lastByKind('hips'), neck = lastByKind('neck');
+      const whr = (waist && hips) ? LOGIC.waistHipRatio(waist, hips) : null;
+      const whtr = waist ? LOGIC.waistHeightRatio(waist, heightCm) : null;
+      const bsa = LOGIC.bodySurfaceArea(weight, heightCm);
+      body.appendChild(listSection({
+        header: 'Anthropometry',
+        rows: [
+          listRow({ title: 'Waist : Hip', accessory: whr ? whr.toFixed(2) : 'log waist + hips' }),
+          listRow({ title: 'Waist : Height', accessory: whtr ? whtr.toFixed(2) : 'log waist' }),
+          listRow({ title: 'Body surface area', accessory: bsa.toFixed(2) + ' m²' })
+        ]
+      }));
+
+      // Powerlifting scores
+      const total = (state.bestLifts.squat || 0) + (state.bestLifts.bench || 0) + (state.bestLifts.deadlift || 0);
+      const wilks = total > 0 ? LOGIC.wilks(total, weight, sex) : null;
+      const dots  = total > 0 ? LOGIC.dots(total, weight, sex)  : null;
+      const ipfgl = total > 0 ? LOGIC.ipfGL(total, weight, sex) : null;
+      body.appendChild(listSection({
+        header: 'Powerlifting scores',
+        rows: [
+          listRow({
+            title: 'Best total',
+            subtitle: total > 0
+              ? `${state.bestLifts.squat||0} / ${state.bestLifts.bench||0} / ${state.bestLifts.deadlift||0} kg`
+              : 'Tap to enter big-3 PRs',
+            accessory: total > 0 ? total + ' kg' : 'chevron',
+            onClick: openBigThreeEditor
+          }),
+          listRow({ title: 'Wilks',  accessory: wilks ? wilks.toFixed(1) : '—' }),
+          listRow({ title: 'DOTS',   accessory: dots  ? dots.toFixed(1)  : '—' }),
+          listRow({ title: 'IPF GL', accessory: ipfgl ? ipfgl.toFixed(1) : '—' })
+        ]
+      }));
+
+      // Cardio fitness
+      const lastVO2 = (() => {
+        const arr = state.fitnessTests.filter(t => t.kind === 'vo2max' || t.kind === 'cooper')
+          .sort((a, b) => new Date(b.recordedAt) - new Date(a.recordedAt));
+        return arr[0];
+      })();
+      body.appendChild(listSection({
+        header: 'Cardio fitness',
+        rows: [
+          listRow({
+            title: lastVO2 ? 'Estimated VO₂ max' : 'No tests yet',
+            subtitle: lastVO2 ? new Date(lastVO2.recordedAt).toLocaleDateString() + ' · ' + (lastVO2.kind === 'cooper' ? 'Cooper' : 'HR-based') : null,
+            accessory: lastVO2 ? lastVO2.value.toFixed(1) + ' ml/kg/min' : '—'
+          }),
+          listRow({
+            title: 'New fitness test',
+            icon: 'plus', iconBg: 'bg-orange',
+            accessory: 'chevron',
+            onClick: openLogFitnessTest
+          })
+        ]
+      }));
+
+      // Recovery
+      const lastRec = state.recoveryLogs.slice(-1)[0];
+      body.appendChild(listSection({
+        header: 'Recovery',
+        rows: [
+          listRow({
+            title: lastRec ? 'Latest log' : 'No logs yet',
+            subtitle: lastRec
+              ? `HRV ${lastRec.hrvMs || '—'} ms · RHR ${lastRec.restingHR || '—'} bpm · sleep ${lastRec.sleepHours || '—'}h`
+              : null,
+            accessory: lastRec ? recoveryScore(lastRec).toFixed(0) : '—'
+          }),
+          listRow({
+            title: 'Log recovery',
+            icon: 'plus', iconBg: 'bg-purple',
+            accessory: 'chevron',
+            onClick: openLogRecovery
+          })
+        ],
+        footer: 'Recovery score: 70 % HRV + 20 % RHR + 10 % sleep, vs your own 30-day baseline. Whoop-style.'
+      }));
+
+      // Log new
+      body.appendChild(listSection({
+        header: 'Log new',
+        rows: [
+          listRow({
+            icon: 'scalemass', iconBg: 'bg-blue',
+            title: 'Quick scale entry',
+            subtitle: 'Weight + body fat % from your scale',
+            accessory: 'chevron',
+            onClick: openLogScale
+          }),
+          listRow({
+            icon: 'list.bullet.rectangle.fill', iconBg: 'bg-purple',
+            title: 'InBody result',
+            subtitle: 'Full segmental analysis',
+            accessory: 'chevron',
+            onClick: openLogInBody
+          }),
+          listRow({
+            icon: 'chart.bar.fill', iconBg: 'bg-orange',
+            title: 'Caliper measurement',
+            subtitle: 'Jackson-Pollock 3 / 7-site, US Navy',
+            accessory: 'chevron',
+            onClick: openLogCalipers
+          }),
+          listRow({
+            icon: 'square.and.pencil', iconBg: 'bg-teal',
+            title: 'Body measurements',
+            subtitle: 'Chest, waist, arms, etc.',
+            accessory: 'chevron',
+            onClick: openBodyMeasurements
+          })
+        ]
+      }));
+
+      // History
+      const all = [...state.bodyComp, ...state.calipers].sort((a, b) => new Date(b.recordedAt) - new Date(a.recordedAt));
+      if (all.length > 0) {
+        body.appendChild(listSection({
+          header: 'History',
+          rows: all.slice(0, 10).map(e => listRow({
+            title: e.computedBf != null
+              ? `Caliper · ${e.method?.toUpperCase() || ''}`
+              : (e.source || 'Body comp'),
+            subtitle: new Date(e.recordedAt).toLocaleDateString(),
+            accessory: e.computedBf != null
+              ? e.computedBf.toFixed(1) + '% BF'
+              : (e.bodyFatPct != null ? e.bodyFatPct.toFixed(1) + '% BF' : (e.weightKg ? e.weightKg + ' kg' : ''))
+          }))
+        }));
+      }
+      return body;
+    }
+    openSheet({
+      title: 'Body composition',
+      leading: h('button', { class: 'btn-link', onClick: closeSheet }, 'Close'),
+      body: build()
+    });
+  }
+
+  function metricCell(iconName, colorVar, value, label) {
+    return h('div', { style: { display: 'flex', flexDirection: 'column', gap: '4px', flex: '1' } },
+      h('div', { style: { display: 'flex', alignItems: 'center', gap: '6px' } },
+        h('span', { style: { color: `var(${colorVar})`, display: 'flex' } }, svg(iconName, { size: 14 })),
+        h('span', { class: 'subtitle' }, label)
+      ),
+      h('div', { style: { font: '700 18px var(--font)', fontVariantNumeric: 'tabular-nums' } }, value)
+    );
+  }
+
+  function recoveryScore(log) {
+    // Local Whoop-style recovery: 70% HRV, 20% RHR, 10% sleep, vs 30d baseline.
+    const recent = state.recoveryLogs.slice(-30);
+    if (recent.length < 3) return 50; // not enough baseline
+    const hrvs = recent.map(r => r.hrvMs).filter(x => x > 0);
+    const rhrs = recent.map(r => r.restingHR).filter(x => x > 0);
+    const sleeps = recent.map(r => r.sleepHours).filter(x => x > 0);
+    const avg = arr => arr.reduce((s, x) => s + x, 0) / arr.length;
+    const hrvBase = avg(hrvs), rhrBase = avg(rhrs), sleepBase = avg(sleeps);
+    const hrvScore = log.hrvMs > 0 ? Math.min(100, (log.hrvMs / hrvBase) * 70) : 50;
+    const rhrScore = log.restingHR > 0 ? Math.min(100, (rhrBase / log.restingHR) * 20) : 50;
+    const sleepScore = log.sleepHours > 0 ? Math.min(100, (log.sleepHours / sleepBase) * 10) : 50;
+    return hrvScore * 0.7 + rhrScore * 0.2 + sleepScore * 0.1;
+  }
+
+  function computeAdaptiveTDEE() {
+    const days = 7;
+    const cutoff = Date.now() - days * 86400000;
+    const weights = state.weights
+      .filter(w => new Date(w.recordedAt) >= cutoff - 86400000)
+      .map(w => ({ kg: w.kg, at: w.recordedAt }))
+      .sort((a, b) => new Date(a.at) - new Date(b.at));
+    if (weights.length < 2) return null;
+    const calorieDays = [];
+    for (let i = days - 1; i >= 0; i--) {
+      const d = new Date(); d.setDate(d.getDate() - i); d.setHours(0,0,0,0);
+      const k = LOGIC.dateKey(d);
+      const t = LOGIC.totalsForDate(state.meals, k);
+      if (t.cal > 0) calorieDays.push(t.cal);
+    }
+    if (calorieDays.length < 3) return null;
+    return LOGIC.adaptiveTDEE(weights, calorieDays);
+  }
+
+  // Big-3 editor
+  function openBigThreeEditor() {
+    const lifts = { ...state.bestLifts };
+    function build() {
+      const body = h('div');
+      body.appendChild(listSection({
+        header: 'Best total (kg)',
+        rows: [
+          listRow({ title: 'Squat',    rightInput: numericInput(lifts.squat,    v => lifts.squat = v,    'kg') }),
+          listRow({ title: 'Bench',    rightInput: numericInput(lifts.bench,    v => lifts.bench = v,    'kg') }),
+          listRow({ title: 'Deadlift', rightInput: numericInput(lifts.deadlift, v => lifts.deadlift = v, 'kg') })
+        ],
+        footer: 'Used to compute Wilks, DOTS and IPF GL points.'
+      }));
+      body.appendChild(h('div', { style: { padding: '0 16px', marginTop: '8px' } },
+        h('button', { class: 'btn-primary', onClick: () => {
+          state.bestLifts = lifts; save();
+          closeSheet(); openBodyCompositionHub();
+        } }, 'Save')
+      ));
+      return body;
+    }
+    openSheet({
+      title: 'Best lifts',
+      leading: h('button', { class: 'btn-link', onClick: () => { closeSheet(); openBodyCompositionHub(); } }, 'Cancel'),
+      body: build()
+    });
+  }
+
+  // Quick scale entry
+  function openLogScale() {
+    let kg = latestWeight();
+    let bf = latestBodyFat() || 0;
+    function build() {
+      const body = h('div');
+      body.appendChild(listSection({
+        header: 'Scale entry',
+        rows: [
+          listRow({ title: 'Weight',   rightInput: numericInput(kg, v => kg = v, 'kg') }),
+          listRow({ title: 'Body fat', rightInput: numericInput(bf, v => bf = v, '%') })
+        ]
+      }));
+      body.appendChild(h('div', { style: { padding: '0 16px', marginTop: '8px' } },
+        h('button', { class: 'btn-primary', onClick: () => {
+          if (kg > 0) {
+            state.weights.push({ kg, recordedAt: new Date().toISOString() });
+            state.bodyComp.push({
+              id: 'bc-' + Date.now(),
+              recordedAt: new Date().toISOString(),
+              source: 'scale',
+              weightKg: kg,
+              bodyFatPct: bf > 0 ? bf : null
+            });
+            save();
+            closeSheet(); openBodyCompositionHub();
+            toast('Logged ' + kg.toFixed(1) + ' kg');
+          }
+        } }, 'Save')
+      ));
+      return body;
+    }
+    openSheet({
+      title: 'Quick scale entry',
+      leading: h('button', { class: 'btn-link', onClick: closeSheet }, 'Cancel'),
+      body: build()
+    });
+  }
+
+  // InBody full entry
+  function openLogInBody() {
+    const e = {
+      weightKg: latestWeight(), bodyFatPct: latestBodyFat() || 0,
+      smmKg: 0, leanMassKg: 0, visceralFatLevel: 0,
+      bodyWaterPct: 0, ecwTbwRatio: 0, boneMassKg: 0,
+      phaseAngleDeg: 0,
+      segLeanArmL: 0, segLeanArmR: 0, segLeanLegL: 0, segLeanLegR: 0, segLeanTrunk: 0
+    };
+    function rowFor(field, label, unit) {
+      return listRow({
+        title: label,
+        rightInput: numericInput(e[field] || 0, v => e[field] = v, unit)
+      });
+    }
+    function build() {
+      const body = h('div');
+      body.appendChild(listSection({
+        header: 'Body composition',
+        rows: [
+          rowFor('weightKg', 'Weight', 'kg'),
+          rowFor('bodyFatPct', 'Body fat', '%'),
+          rowFor('smmKg', 'Skeletal muscle mass', 'kg'),
+          rowFor('leanMassKg', 'Lean body mass', 'kg'),
+          rowFor('boneMassKg', 'Bone mass', 'kg')
+        ]
+      }));
+      body.appendChild(listSection({
+        header: 'Body water',
+        rows: [
+          rowFor('bodyWaterPct', 'Total body water', '%'),
+          rowFor('ecwTbwRatio',  'ECW / TBW ratio', '')
+        ],
+        footer: 'Healthy range typically 0.36 — 0.39.'
+      }));
+      body.appendChild(listSection({
+        header: 'Risk markers',
+        rows: [
+          rowFor('visceralFatLevel', 'Visceral fat level', ''),
+          rowFor('phaseAngleDeg', 'Whole-body phase angle', '°')
+        ],
+        footer: 'Visceral fat level <10 is healthy. Phase angle >5° suggests good cellular health.'
+      }));
+      body.appendChild(listSection({
+        header: 'Segmental lean mass (kg)',
+        rows: [
+          rowFor('segLeanArmL', 'Left arm', 'kg'),
+          rowFor('segLeanArmR', 'Right arm', 'kg'),
+          rowFor('segLeanTrunk', 'Trunk', 'kg'),
+          rowFor('segLeanLegL', 'Left leg', 'kg'),
+          rowFor('segLeanLegR', 'Right leg', 'kg')
+        ]
+      }));
+      body.appendChild(h('div', { style: { padding: '0 16px', marginTop: '8px' } },
+        h('button', { class: 'btn-primary', onClick: () => {
+          if (!(e.weightKg > 0)) return toast('Enter at least weight');
+          state.bodyComp.push({
+            id: 'bc-' + Date.now(),
+            recordedAt: new Date().toISOString(),
+            source: 'inbody',
+            ...e
+          });
+          if (e.weightKg > 0) state.weights.push({ kg: e.weightKg, recordedAt: new Date().toISOString() });
+          save();
+          closeSheet(); openBodyCompositionHub();
+          toast('InBody result saved');
+        } }, 'Save')
+      ));
+      return body;
+    }
+    openSheet({
+      title: 'InBody result',
+      leading: h('button', { class: 'btn-link', onClick: closeSheet }, 'Cancel'),
+      body: build()
+    });
+  }
+
+  // Caliper entry
+  function openLogCalipers() {
+    let method = 'jp3';
+    const sites = { chest: 0, abdomen: 0, thigh: 0, triceps: 0, suprailiac: 0, subscapular: 0, midaxillary: 0,
+                    waistIn: 0, neckIn: 0, hipIn: 0, heightIn: (state.goals.height || 180) / 2.54 };
+    const age = userAge();
+    const sex = state.user?.sex || 'male';
+    function compute() {
+      if (method === 'jp3') {
+        if (sex === 'male') return LOGIC.jp3Male(sites.chest, sites.abdomen, sites.thigh, age);
+        return LOGIC.jp3Female(sites.triceps, sites.suprailiac, sites.thigh, age);
+      }
+      if (method === 'jp7') {
+        return sex === 'male'
+          ? LOGIC.jp7Male(sites.chest, sites.abdomen, sites.thigh, sites.triceps, sites.subscapular, sites.suprailiac, sites.midaxillary, age)
+          : LOGIC.jp7Female(sites.chest, sites.abdomen, sites.thigh, sites.triceps, sites.subscapular, sites.suprailiac, sites.midaxillary, age);
+      }
+      if (method === 'navy') {
+        return sex === 'male'
+          ? LOGIC.usNavyMale(sites.waistIn, sites.neckIn, sites.heightIn)
+          : LOGIC.usNavyFemale(sites.waistIn, sites.hipIn, sites.neckIn, sites.heightIn);
+      }
+      return 0;
+    }
+    function build() {
+      const body = h('div');
+      body.appendChild(chipRow(
+        [{id:'jp3', label:'JP-3'}, {id:'jp7', label:'JP-7'}, {id:'navy', label:'US Navy'}],
+        method, m => { method = m; replace(); }
+      ));
+      const rowFor = (key, label, unit) => listRow({
+        title: label,
+        rightInput: numericInput(sites[key] || 0, v => { sites[key] = v; replace(); }, unit)
+      });
+      if (method === 'jp3' && sex === 'male') {
+        body.appendChild(listSection({ header: 'Skinfolds (mm)', rows: [
+          rowFor('chest', 'Chest', 'mm'),
+          rowFor('abdomen', 'Abdomen', 'mm'),
+          rowFor('thigh', 'Thigh', 'mm')
+        ], footer: 'Jackson-Pollock 3-site, men.' }));
+      } else if (method === 'jp3') {
+        body.appendChild(listSection({ header: 'Skinfolds (mm)', rows: [
+          rowFor('triceps', 'Triceps', 'mm'),
+          rowFor('suprailiac', 'Suprailiac', 'mm'),
+          rowFor('thigh', 'Thigh', 'mm')
+        ], footer: 'Jackson-Pollock 3-site, women.' }));
+      } else if (method === 'jp7') {
+        body.appendChild(listSection({ header: 'Skinfolds (mm)', rows: [
+          rowFor('chest', 'Chest', 'mm'),
+          rowFor('abdomen', 'Abdomen', 'mm'),
+          rowFor('thigh', 'Thigh', 'mm'),
+          rowFor('triceps', 'Triceps', 'mm'),
+          rowFor('subscapular', 'Subscapular', 'mm'),
+          rowFor('suprailiac', 'Suprailiac', 'mm'),
+          rowFor('midaxillary', 'Midaxillary', 'mm')
+        ], footer: 'Jackson-Pollock 7-site.' }));
+      } else if (method === 'navy') {
+        const navyRows = [
+          rowFor('waistIn', 'Waist', 'in'),
+          rowFor('neckIn',  'Neck',  'in'),
+          rowFor('heightIn','Height','in')
+        ];
+        if (sex === 'female') navyRows.push(rowFor('hipIn', 'Hip', 'in'));
+        body.appendChild(listSection({ header: 'Circumferences (inches)', rows: navyRows, footer: 'US Navy method (Hodgdon-Beckett).' }));
+      }
+      const computed = compute();
+      const valid = isFinite(computed) && computed > 2 && computed < 50;
+      body.appendChild(listSection({
+        header: 'Estimated body fat',
+        rows: [ listRow({ title: 'Result', accessory: valid ? computed.toFixed(1) + ' %' : '—' }) ]
+      }));
+      body.appendChild(h('div', { style: { padding: '0 16px', marginTop: '8px' } },
+        h('button', { class: 'btn-primary', onClick: () => {
+          if (!valid) return toast('Enter all sites');
+          state.calipers.push({
+            id: 'cal-' + Date.now(),
+            recordedAt: new Date().toISOString(),
+            method, sex, age,
+            sites: { ...sites },
+            computedBf: computed
+          });
+          save();
+          closeSheet(); openBodyCompositionHub();
+          toast(`BF ${computed.toFixed(1)}% logged`);
+        } }, 'Save')
+      ));
+      return body;
+    }
+    function replace() {
+      const c = $('.sheet-content');
+      if (c) { c.innerHTML = ''; c.appendChild(build()); }
+    }
+    openSheet({
+      title: 'Calipers',
+      leading: h('button', { class: 'btn-link', onClick: closeSheet }, 'Cancel'),
+      body: build()
+    });
+  }
+
+  // Fitness test entry
+  function openLogFitnessTest() {
+    let kind = 'cooper';
+    const data = { meters: 2400, restingHR: 60, mileSec: 480, plankSec: 120, pushupMax: 30, hrvMs: 50 };
+    function compute() {
+      if (kind === 'cooper')   return LOGIC.vo2maxFromCooper(data.meters);
+      if (kind === 'rhr_vo2')  return LOGIC.vo2maxFromRHR(userAge(), data.restingHR);
+      return null;
+    }
+    function build() {
+      const body = h('div');
+      body.appendChild(chipRow([
+        { id: 'cooper',  label: 'Cooper 12-min' },
+        { id: 'rhr_vo2', label: 'RHR-based VO₂' },
+        { id: 'mile',    label: '1-mile run' },
+        { id: 'plank',   label: 'Plank' },
+        { id: 'pushup',  label: 'Push-ups' },
+        { id: 'hrv',     label: 'HRV' }
+      ], kind, k => { kind = k; replace(); }));
+
+      let inputRows = [];
+      if (kind === 'cooper') {
+        inputRows.push(listRow({ title: 'Distance', rightInput: numericInput(data.meters, v => { data.meters = v; replace(); }, 'm') }));
+      } else if (kind === 'rhr_vo2') {
+        inputRows.push(listRow({ title: 'Resting HR', rightInput: numericInput(data.restingHR, v => { data.restingHR = v; replace(); }, 'bpm') }));
+      } else if (kind === 'mile') {
+        inputRows.push(listRow({ title: 'Time', rightInput: numericInput(data.mileSec, v => data.mileSec = v, 's') }));
+      } else if (kind === 'plank') {
+        inputRows.push(listRow({ title: 'Hold', rightInput: numericInput(data.plankSec, v => data.plankSec = v, 's') }));
+      } else if (kind === 'pushup') {
+        inputRows.push(listRow({ title: 'Max reps', rightInput: numericInput(data.pushupMax, v => data.pushupMax = v, '') }));
+      } else if (kind === 'hrv') {
+        inputRows.push(listRow({ title: 'HRV (RMSSD)', rightInput: numericInput(data.hrvMs, v => data.hrvMs = v, 'ms') }));
+      }
+      body.appendChild(listSection({ header: 'Test', rows: inputRows }));
+
+      const computed = compute();
+      if (computed != null) {
+        body.appendChild(listSection({
+          header: 'Estimated VO₂ max',
+          rows: [ listRow({ title: 'Result', accessory: computed.toFixed(1) + ' ml/kg/min' }) ]
+        }));
+      }
+
+      body.appendChild(h('div', { style: { padding: '0 16px', marginTop: '8px' } },
+        h('button', { class: 'btn-primary', onClick: () => {
+          let value, unit;
+          if (kind === 'cooper')      { value = computed;        unit = 'vo2max'; }
+          else if (kind === 'rhr_vo2'){ value = computed;        unit = 'vo2max'; }
+          else if (kind === 'mile')   { value = data.mileSec;    unit = 's'; }
+          else if (kind === 'plank')  { value = data.plankSec;   unit = 's'; }
+          else if (kind === 'pushup') { value = data.pushupMax;  unit = 'reps'; }
+          else if (kind === 'hrv')    { value = data.hrvMs;      unit = 'ms'; }
+          state.fitnessTests.push({
+            id: 'ft-' + Date.now(),
+            recordedAt: new Date().toISOString(),
+            kind: kind === 'cooper' || kind === 'rhr_vo2' ? 'vo2max' : kind,
+            value, unit, raw: { ...data }
+          });
+          save();
+          closeSheet(); openBodyCompositionHub();
+          toast('Test saved');
+        } }, 'Save test')
+      ));
+      return body;
+    }
+    function replace() {
+      const c = $('.sheet-content');
+      if (c) { c.innerHTML = ''; c.appendChild(build()); }
+    }
+    openSheet({
+      title: 'Fitness test',
+      leading: h('button', { class: 'btn-link', onClick: closeSheet }, 'Cancel'),
+      body: build()
+    });
+  }
+
+  // Recovery log
+  function openLogRecovery() {
+    const log = { hrvMs: 0, restingHR: 0, sleepHours: 0, mood: 5 };
+    function build() {
+      const body = h('div');
+      body.appendChild(listSection({
+        header: 'Recovery log',
+        rows: [
+          listRow({ title: 'HRV (RMSSD)', rightInput: numericInput(log.hrvMs, v => log.hrvMs = v, 'ms') }),
+          listRow({ title: 'Resting HR',  rightInput: numericInput(log.restingHR, v => log.restingHR = v, 'bpm') }),
+          listRow({ title: 'Sleep',       rightInput: numericInput(log.sleepHours, v => log.sleepHours = v, 'h') }),
+          listRow({ title: 'Mood (1-10)', rightInput: numericInput(log.mood, v => log.mood = v, '') })
+        ],
+        footer: 'Optional. Recovery score uses HRV + RHR + sleep, weighted Whoop-style.'
+      }));
+      body.appendChild(h('div', { style: { padding: '0 16px', marginTop: '8px' } },
+        h('button', { class: 'btn-primary', onClick: () => {
+          state.recoveryLogs.push({
+            id: 'rec-' + Date.now(),
+            recordedAt: new Date().toISOString(),
+            ...log
+          });
+          save();
+          closeSheet(); openBodyCompositionHub();
+          toast('Recovery logged');
+        } }, 'Save')
+      ));
+      return body;
+    }
+    openSheet({
+      title: 'Log recovery',
+      leading: h('button', { class: 'btn-link', onClick: closeSheet }, 'Cancel'),
+      body: build()
     });
   }
 
@@ -2855,6 +3705,125 @@
       }
     },
     {
+      name: 'BMI 70kg / 175cm ≈ 22.86',
+      run: () => assertClose(LOGIC.bmi(70, 175), 22.857, 0.01)
+    },
+    {
+      name: 'BMR Mifflin (M, 80kg, 180cm, 30y) = 1780',
+      run: () => assertClose(LOGIC.bmrMifflin(80, 180, 30, 'male'), 1780, 0.5)
+    },
+    {
+      name: 'BMR Mifflin (F, 65kg, 165cm, 30y) = 1370.25',
+      run: () => assertClose(LOGIC.bmrMifflin(65, 165, 30, 'female'), 1370.25, 0.5)
+    },
+    {
+      name: 'BMR Katch-McArdle (60kg lean) = 1666',
+      run: () => assertClose(LOGIC.bmrKatchMcArdle(60), 1666, 0.5)
+    },
+    {
+      name: 'TDEE = BMR × activity',
+      run: () => assertClose(LOGIC.tdee(2000, 1.55), 3100, 0.5)
+    },
+    {
+      name: 'VO2max from RHR (30y, 60bpm) ≈ 48.45',
+      run: () => assertClose(LOGIC.vo2maxFromRHR(30, 60), 48.45, 0.05)
+    },
+    {
+      name: 'Cooper 12-min 2400m → VO2max ≈ 42.36',
+      run: () => assertClose(LOGIC.vo2maxFromCooper(2400), 42.36, 0.05)
+    },
+    {
+      name: 'FFMI 80kg / 180cm @ 15% ≈ 20.99',
+      run: () => assertClose(LOGIC.ffmi(80, 180, 15), 20.99, 0.05)
+    },
+    {
+      name: 'Adjusted FFMI normalises to 1.8m height',
+      run: () => {
+        // At exactly 1.8m the adjustment is 0, so adj == ffmi.
+        assertClose(LOGIC.ffmiAdjusted(80, 180, 15), LOGIC.ffmi(80, 180, 15), 0.001);
+      }
+    },
+    {
+      name: 'Body surface area (Mosteller) for 70kg/175cm',
+      run: () => assertClose(LOGIC.bodySurfaceArea(70, 175), Math.sqrt(70*175/3600), 0.001)
+    },
+    {
+      name: 'Waist:hip 80/100 = 0.80',
+      run: () => assertClose(LOGIC.waistHipRatio(80, 100), 0.8, 0.001)
+    },
+    {
+      name: 'JP3 (M) reasonable BF for fit lifter',
+      run: () => {
+        // 30y, fit physique: chest 8mm, abdomen 12mm, thigh 10mm
+        const bf = LOGIC.jp3Male(8, 12, 10, 30);
+        if (!(bf > 8 && bf < 14)) throw new Error('expected 8-14, got ' + bf);
+      }
+    },
+    {
+      name: 'JP7 (M) reasonable BF for average male',
+      run: () => {
+        // 35y average: 12, 20, 14, 12, 18, 18, 14
+        const bf = LOGIC.jp7Male(12, 20, 14, 12, 18, 18, 14, 35);
+        if (!(bf > 14 && bf < 22)) throw new Error('expected 14-22, got ' + bf);
+      }
+    },
+    {
+      name: 'US Navy (M) reasonable BF for fit male',
+      run: () => {
+        // 32" waist, 15.5" neck, 70" height
+        const bf = LOGIC.usNavyMale(32, 15.5, 70);
+        if (!(bf > 8 && bf < 16)) throw new Error('expected 8-16, got ' + bf);
+      }
+    },
+    {
+      name: 'Wilks for 600kg @ 90kg M is ~384',
+      run: () => {
+        const score = LOGIC.wilks(600, 90, 'male');
+        if (!(score > 370 && score < 400)) throw new Error('expected 370-400, got ' + score);
+      }
+    },
+    {
+      name: 'DOTS for 600kg @ 90kg M is ~388',
+      run: () => {
+        const score = LOGIC.dots(600, 90, 'male');
+        if (!(score > 370 && score < 420)) throw new Error('expected 370-420, got ' + score);
+      }
+    },
+    {
+      name: 'IPF GL for 600kg @ 90kg M is ~80',
+      run: () => {
+        const score = LOGIC.ipfGL(600, 90, 'male');
+        if (!(score > 75 && score < 90)) throw new Error('expected 75-90, got ' + score);
+      }
+    },
+    {
+      name: 'adaptiveTDEE recovers expenditure from data',
+      run: () => {
+        // 7-day window, started 80kg ended 80kg, avg intake 2500 → TDEE ≈ 2500
+        const weights = [
+          { kg: 80, at: '2026-05-02T08:00' },
+          { kg: 80, at: '2026-05-09T08:00' }
+        ];
+        const calories = [2500, 2500, 2500, 2500, 2500, 2500, 2500];
+        const tdee = LOGIC.adaptiveTDEE(weights, calories);
+        assertClose(tdee, 2500, 5);
+      }
+    },
+    {
+      name: 'adaptiveTDEE flags surplus from weight gain',
+      run: () => {
+        // Gained 0.5kg in 7 days, intake avg 3000 → expended ~3000 - 550 = 2450
+        const weights = [
+          { kg: 80, at: '2026-05-02T08:00' },
+          { kg: 80.5, at: '2026-05-09T08:00' }
+        ];
+        const calories = Array(7).fill(3000);
+        const tdee = LOGIC.adaptiveTDEE(weights, calories);
+        // 0.5 kg = 3850 kcal surplus across 7 days = 550 kcal/day surplus
+        assertClose(tdee, 3000 - 550, 5);
+      }
+    },
+    {
       name: 'bestPerSession picks max 1RM per day',
       run: () => {
         const sets = [
@@ -3038,6 +4007,19 @@
   // ============================================================
   // Boot
   // ============================================================
+  function fitPhoneToViewport() {
+    // Real iPhone 15 Pro is 393×852. We always honour that aspect ratio in
+    // layout, but shrink the chassis (incl. children) via CSS zoom when the
+    // viewport is smaller than chassis + bezel + outer ambient shadow.
+    const PHONE_W = 393, PHONE_H = 852, BEZEL = 28;  // 12 frame + 16 wrap
+    const vw = document.documentElement.clientWidth;
+    const vh = document.documentElement.clientHeight;
+    const fitH = (vh - BEZEL * 2) / PHONE_H;
+    const fitW = (vw - BEZEL * 2) / PHONE_W;
+    const z = Math.max(0.4, Math.min(1, fitH, fitW));
+    document.documentElement.style.setProperty('--phone-zoom', z.toFixed(3));
+  }
+
   function boot() {
     // Status bar fill
     $('.status-bar .right').innerHTML = icon('cellularbars', { size: 17, strokeWidth: 0 }) +
@@ -3046,6 +4028,8 @@
     applyTheme();
     tickStatusBar();
     setInterval(tickStatusBar, 30000);
+    fitPhoneToViewport();
+    window.addEventListener('resize', fitPhoneToViewport);
     rerender();
     if (!state.onboarded) {
       // Defer slightly so initial paint settles first.

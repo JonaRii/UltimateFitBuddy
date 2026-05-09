@@ -119,45 +119,113 @@ input[type=number]::-webkit-outer-spin-button {
 .hidden { display: none !important; }
 
 /* ============================================================
-   Phone shell
+   Phone shell — iPhone 15 Pro chassis (393 × 852 logical).
+   Frame is always shown on desktop; only true phone-sized viewports
+   (≤ 480 px wide) drop into full-screen mode.
    ============================================================ */
 .phone-shell {
   display: flex; align-items: center; justify-content: center;
-  min-height: 100vh; padding: 24px;
-  background: linear-gradient(135deg, #2c2c2c, #0a0a0a);
+  min-height: 100vh; height: 100vh; padding: 16px;
+  background:
+    radial-gradient(ellipse at 30% 20%, #2a2a2a 0%, transparent 60%),
+    radial-gradient(ellipse at 80% 90%, #1a1a1a 0%, transparent 60%),
+    linear-gradient(135deg, #1f1f1f, #050505);
+  overflow: hidden;
 }
+[data-theme="light"] .phone-shell {
+  background:
+    radial-gradient(ellipse at 30% 20%, #e3e3e8 0%, transparent 60%),
+    radial-gradient(ellipse at 80% 90%, #c8c8d0 0%, transparent 60%),
+    linear-gradient(135deg, #d4d4dc, #b3b3c2);
+}
+
 .phone {
-  width: 390px; height: 844px;
+  position: relative;
+  width: 393px; height: 852px;
+  /* `zoom` shrinks both layout box and rendered children — keeps the iPhone
+     proportions while fitting any laptop viewport. JS picks the value on
+     load and resize; falls back to 1 if JS hasn't run yet. */
+  zoom: var(--phone-zoom, 1);
   background: var(--bg-system);
-  border-radius: 50px;
-  box-shadow: 0 0 0 12px #1a1a1a, 0 30px 80px rgba(0,0,0,0.55);
-  overflow: hidden; position: relative;
+  border-radius: 56px;
+  /* Outer titanium-ish bezel + outer ambient shadow + sharp inner edge */
+  box-shadow:
+    0 0 0 2px #c8c8c8,
+    0 0 0 10px #2c2c2e,
+    0 0 0 12px #1a1a1a,
+    0 30px 80px rgba(0,0,0,0.55),
+    0 8px 24px rgba(0,0,0,0.35);
+  overflow: hidden;
   display: flex; flex-direction: column;
+  isolation: isolate;
 }
-@media (max-width: 480px), (max-height: 880px) {
+[data-theme="light"] .phone {
+  box-shadow:
+    0 0 0 2px #d8d8d8,
+    0 0 0 10px #3a3a3c,
+    0 0 0 12px #2a2a2c,
+    0 30px 80px rgba(0,0,0,0.35),
+    0 8px 24px rgba(0,0,0,0.25);
+}
+
+/* Dynamic-island-style pill in the status bar */
+.phone::before {
+  content: "";
+  position: absolute;
+  top: 11px; left: 50%; transform: translateX(-50%);
+  width: 124px; height: 36px;
+  background: #000;
+  border-radius: 20px;
+  z-index: 7;
+  pointer-events: none;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.04);
+}
+
+/* Home indicator pill at the bottom */
+.phone::after {
+  content: "";
+  position: absolute;
+  bottom: 8px; left: 50%; transform: translateX(-50%);
+  width: 134px; height: 5px;
+  background: var(--label-primary);
+  opacity: 0.85;
+  border-radius: 3px;
+  z-index: 7;
+  pointer-events: none;
+}
+
+/* Phone-sized viewports: drop the frame entirely. */
+@media (max-width: 480px) {
   body { background: var(--bg-system); }
-  .phone-shell { padding: 0; }
+  .phone-shell { padding: 0; background: var(--bg-system); }
   .phone {
     width: 100vw; height: 100vh;
     border-radius: 0;
     box-shadow: none;
   }
+  .phone::before, .phone::after { display: none; }
 }
 
 /* ============================================================
    Status bar (cosmetic)
    ============================================================ */
 .status-bar {
-  flex: 0 0 47px;
+  flex: 0 0 54px;
   display: flex; align-items: center; justify-content: space-between;
-  padding: 0 28px;
+  padding: 8px 30px 0;
   font: 600 16px var(--font);
   color: var(--label-primary);
   position: relative;
   z-index: 6;
 }
+.status-bar .left {
+  flex: 1;
+  display: flex; align-items: center; justify-content: flex-start;
+}
 .status-bar .right {
-  display: flex; gap: 5px; align-items: center;
+  flex: 1;
+  display: flex; align-items: center; justify-content: flex-end;
+  gap: 6px;
 }
 .status-bar svg { width: 17px; height: 12px; }
 .battery {
@@ -206,7 +274,7 @@ input[type=number]::-webkit-outer-spin-button {
    ============================================================ */
 .content {
   flex: 1; overflow-y: auto;
-  padding-bottom: 100px;
+  padding-bottom: 110px;
   -webkit-overflow-scrolling: touch;
 }
 
@@ -215,7 +283,8 @@ input[type=number]::-webkit-outer-spin-button {
    ============================================================ */
 .tab-bar {
   position: absolute; bottom: 0; left: 0; right: 0;
-  height: 83px;
+  height: 90px;
+  padding-bottom: 22px;   /* clears the home indicator */
   background: rgba(255, 255, 255, 0.85);
   backdrop-filter: saturate(180%) blur(20px);
   -webkit-backdrop-filter: saturate(180%) blur(20px);
