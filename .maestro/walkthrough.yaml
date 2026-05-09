@@ -1,0 +1,32 @@
+appId: com.jonatanriise.fitbuddy
+name: First-launch walkthrough
+---
+- launchApp:
+    clearState: true
+    permissions:
+      all: allow
+- waitForAnimationToEnd
+- takeScreenshot: 01-dashboard
+
+# Cycle through every tab so we capture each home view
+- tapOn:
+    text: "Workouts"
+- waitForAnimationToEnd
+- takeScreenshot: 02-workouts
+
+- tapOn:
+    text: "Nutrition"
+- waitForAnimationToEnd
+- takeScreenshot: 03-nutrition
+
+- tapOn:
+    text: "You"
+- waitForAnimationToEnd
+- takeScreenshot: 04-profile
+
+# Back to dashboard, dwell so the recorder catches it
+- tapOn:
+    text: "Today"
+- waitForAnimationToEnd
+- takeScreenshot: 05-dashboard-final
+- waitForAnimationToEnd
