@@ -87,9 +87,9 @@ struct ActiveWorkoutView: View {
             }
             ForEach(groups, id: \.exerciseId) { group in
                 Section(header: Text(group.exerciseName).font(.headline)) {
-                    ForEach(group.sets) { set in
-                        SetRowView(set: set, onComplete: {
-                            set.isCompleted = true
+                    ForEach(group.sets) { aSet in
+                        SetRowView(entry: aSet, onComplete: {
+                            aSet.isCompleted = true
                             try? modelContext.save()
                             restSeconds = 90
                         })
@@ -204,17 +204,17 @@ struct ActiveWorkoutView: View {
 }
 
 struct SetRowView: View {
-    @Bindable var set: ExerciseSet
+    @Bindable var entry: ExerciseSet
     var isPR: Bool = false
     var onComplete: () -> Void
 
     private var badgeText: String {
-        set.isWarmup ? "W" : "\(set.ordinal + 1)"
+        entry.isWarmup ? "W" : "\(entry.ordinal + 1)"
     }
 
     private var badgeColor: Color {
-        if set.isWarmup { return AppTheme.warning }
-        if set.isCompleted { return AppTheme.accent }
+        if entry.isWarmup { return AppTheme.warning }
+        if entry.isCompleted { return AppTheme.accent }
         return Color.gray.opacity(0.2)
     }
 
@@ -225,12 +225,12 @@ struct SetRowView: View {
                     .font(.caption.bold())
                     .frame(width: 24, height: 24)
                     .background(badgeColor)
-                    .foregroundStyle((set.isCompleted || set.isWarmup) ? .white : .primary)
+                    .foregroundStyle((entry.isCompleted || entry.isWarmup) ? .white : .primary)
                     .clipShape(Circle())
                     .onTapGesture {
-                        set.isWarmup.toggle()
+                        entry.isWarmup.toggle()
                     }
-                if isPR && set.isCompleted {
+                if isPR && entry.isCompleted {
                     Text("★")
                         .font(.system(size: 11, weight: .bold))
                         .foregroundStyle(.black)
@@ -242,7 +242,7 @@ struct SetRowView: View {
             }
 
             HStack(spacing: 4) {
-                TextField("kg", value: $set.weightKg, format: .number)
+                TextField("kg", value: $entry.weightKg, format: .number)
                     .keyboardType(.decimalPad)
                     .frame(width: 60)
                     .multilineTextAlignment(.trailing)
@@ -250,7 +250,7 @@ struct SetRowView: View {
             }
 
             HStack(spacing: 4) {
-                TextField("reps", value: $set.reps, format: .number)
+                TextField("reps", value: $entry.reps, format: .number)
                     .keyboardType(.numberPad)
                     .frame(width: 50)
                     .multilineTextAlignment(.trailing)
@@ -262,9 +262,9 @@ struct SetRowView: View {
             Button {
                 onComplete()
             } label: {
-                Image(systemName: set.isCompleted ? "checkmark.circle.fill" : "circle")
+                Image(systemName: entry.isCompleted ? "checkmark.circle.fill" : "circle")
                     .imageScale(.large)
-                    .foregroundStyle(set.isCompleted ? AppTheme.accent : .secondary)
+                    .foregroundStyle(entry.isCompleted ? AppTheme.accent : .secondary)
             }
             .buttonStyle(.plain)
         }
