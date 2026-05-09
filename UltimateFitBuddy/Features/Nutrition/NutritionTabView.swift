@@ -226,6 +226,15 @@ struct NutritionTabView: View {
                     Text("\(Int(m.totalMacros.calories)) kcal")
                         .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                 }
+                if let entries = meal?.entries, !entries.isEmpty {
+                    Button {
+                        saveMealAsTemplate(meal: meal!)
+                    } label: {
+                        Image(systemName: "bookmark")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
                 Button {
                     addingTo = type
                 } label: {
@@ -243,6 +252,16 @@ struct NutritionTabView: View {
             }
         }
         .card()
+    }
+
+    private func saveMealAsTemplate(meal: Meal) {
+        let realEntries = (meal.entries ?? []).filter { $0.food != nil && $0.gramsConsumed > 0 }
+        guard !realEntries.isEmpty else { return }
+        let saved = SavedMeal(name: "My \(meal.mealType.displayName.lowercased())")
+        saved.foodIds = realEntries.compactMap { $0.food?.id }
+        saved.gramsList = realEntries.map { $0.gramsConsumed }
+        modelContext.insert(saved)
+        try? modelContext.save()
     }
 
     private func delete(_ entry: FoodEntry) {
