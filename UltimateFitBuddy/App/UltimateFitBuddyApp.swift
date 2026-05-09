@@ -4,14 +4,23 @@ import SwiftData
 @main
 struct UltimateFitBuddyApp: App {
     @State private var appState = AppState()
+    @AppStorage("ufb.onboarded") private var onboarded: Bool = false
 
     var body: some Scene {
         WindowGroup {
-            RootTabView()
-                .environment(appState)
-                .task {
-                    await appState.bootstrap()
+            ZStack {
+                RootTabView()
+                    .environment(appState)
+                    .task {
+                        await appState.bootstrap()
+                    }
+                if !onboarded {
+                    OnboardingView()
+                        .transition(.opacity)
+                        .zIndex(1)
                 }
+            }
+            .animation(.easeInOut(duration: 0.25), value: onboarded)
         }
         .modelContainer(AppModelContainer.shared.container)
     }

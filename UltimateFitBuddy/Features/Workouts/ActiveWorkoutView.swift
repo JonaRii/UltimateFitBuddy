@@ -205,15 +205,41 @@ struct ActiveWorkoutView: View {
 
 struct SetRowView: View {
     @Bindable var set: ExerciseSet
+    var isPR: Bool = false
     var onComplete: () -> Void
+
+    private var badgeText: String {
+        set.isWarmup ? "W" : "\(set.ordinal + 1)"
+    }
+
+    private var badgeColor: Color {
+        if set.isWarmup { return AppTheme.warning }
+        if set.isCompleted { return AppTheme.accent }
+        return Color.gray.opacity(0.2)
+    }
+
     var body: some View {
         HStack(spacing: 12) {
-            Text("\(set.ordinal + 1)")
-                .font(.caption.bold())
-                .frame(width: 22, height: 22)
-                .background(set.isCompleted ? AppTheme.accent : Color.gray.opacity(0.2))
-                .foregroundStyle(set.isCompleted ? .white : .primary)
-                .clipShape(Circle())
+            ZStack(alignment: .topTrailing) {
+                Text(badgeText)
+                    .font(.caption.bold())
+                    .frame(width: 24, height: 24)
+                    .background(badgeColor)
+                    .foregroundStyle((set.isCompleted || set.isWarmup) ? .white : .primary)
+                    .clipShape(Circle())
+                    .onTapGesture {
+                        set.isWarmup.toggle()
+                    }
+                if isPR && set.isCompleted {
+                    Text("★")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(.black)
+                        .frame(width: 14, height: 14)
+                        .background(AppTheme.warning)
+                        .clipShape(Circle())
+                        .offset(x: 6, y: -6)
+                }
+            }
 
             HStack(spacing: 4) {
                 TextField("kg", value: $set.weightKg, format: .number)
