@@ -13,6 +13,7 @@ final class User: Identifiable {
     var proteinGoalG: Int = 160
     var carbsGoalG: Int = 220
     var fatGoalG: Int = 70
+    var waterGoalMl: Int = 2500
     var activityLevel: String = "moderate"
     var createdAt: Date = Date.now
 

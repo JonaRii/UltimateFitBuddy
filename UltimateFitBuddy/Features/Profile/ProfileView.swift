@@ -35,6 +35,10 @@ struct ProfileView: View {
                             get: { user.fatGoalG },
                             set: { user.fatGoalG = $0; try? modelContext.save() }
                         ), unit: "g")
+                        intRow("Water", value: Binding(
+                            get: { user.waterGoalMl },
+                            set: { user.waterGoalMl = $0; try? modelContext.save() }
+                        ), unit: "ml")
                     }
                     Section("Body") {
                         doubleRow("Height", value: Binding(

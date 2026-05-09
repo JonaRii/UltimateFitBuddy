@@ -33,6 +33,9 @@ struct AddFoodFlow: View {
                     } label: {
                         Label("Scan barcode", systemImage: "barcode.viewfinder")
                     }
+                    NavigationLink(destination: QuickAddView(onAdd: addQuickEntry)) {
+                        Label("Quick add calories", systemImage: "plus.circle")
+                    }
                     NavigationLink(destination: ManualFoodEditor(onSave: { food in
                         addEntry(food: food, grams: food.servingSizeG)
                     })) {
@@ -105,6 +108,25 @@ struct AddFoodFlow: View {
                 statusMessage = "Couldn't find \(code) in Open Food Facts. Add manually?"
             }
         }
+    }
+
+    private func addQuickEntry(kcal: Double, protein: Double, carbs: Double, fat: Double) {
+        let meal = ensureMeal()
+        let entry = FoodEntry(food: nil, gramsConsumed: 0)
+        entry.foodNameSnapshot = "Quick add"
+        entry.caloriesSnapshot = kcal
+        entry.proteinSnapshot = protein
+        entry.carbsSnapshot = carbs
+        entry.fatSnapshot = fat
+        entry.consumedAt = .now
+        entry.meal = meal
+        modelContext.insert(entry)
+        try? modelContext.save()
+        Task {
+            await appState.healthKit.saveFoodEntry(macros: entry.macros, at: entry.consumedAt)
+        }
+        onClose()
+        dismiss()
     }
 
     private func addEntry(food: Food, grams: Double) {
@@ -189,6 +211,47 @@ struct FoodPortionSheet: View {
                     Button("Cancel") { dismiss() }
                 }
             }
+        }
+    }
+}
+
+struct QuickAddView: View {
+    @Environment(\.dismiss) private var dismiss
+    var onAdd: (Double, Double, Double, Double) -> Void
+    @State private var kcal: Double = 0
+    @State private var protein: Double = 0
+    @State private var carbs: Double = 0
+    @State private var fat: Double = 0
+
+    var body: some View {
+        Form {
+            Section("Quick add") {
+                numField("Calories", value: $kcal, unit: "kcal")
+                numField("Protein", value: $protein, unit: "g")
+                numField("Carbs", value: $carbs, unit: "g")
+                numField("Fat", value: $fat, unit: "g")
+            } footer: {
+                Text("For when you don't want to log a specific food.")
+            }
+            Button("Add") {
+                onAdd(kcal, protein, carbs, fat)
+                dismiss()
+            }
+            .disabled(kcal <= 0)
+        }
+        .navigationTitle("Quick add")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private func numField(_ label: String, value: Binding<Double>, unit: String) -> some View {
+        HStack {
+            Text(label)
+            Spacer()
+            TextField(unit, value: value, format: .number)
+                .keyboardType(.decimalPad)
+                .multilineTextAlignment(.trailing)
+                .frame(width: 80)
+            Text(unit).foregroundStyle(.secondary)
         }
     }
 }
