@@ -89,8 +89,12 @@ async function run() {
 
   log('Loading index.html…');
   await page.goto(INDEX);
-  // Wipe any leftover state from earlier runs so each smoke test is clean.
-  await page.evaluate(() => localStorage.clear());
+  // Wipe any leftover state, then prime onboarded=true so the welcome
+  // overlay doesn't intercept clicks during the flow tests.
+  await page.evaluate(() => {
+    localStorage.clear();
+    localStorage.setItem('ufb_state_v4', JSON.stringify({ onboarded: true }));
+  });
   await page.reload();
   await page.waitForFunction(() => !!document.querySelector('.tab-bar .tab-btn'), { timeout: 5000 });
   log('  ✓ booted (clean state)');

@@ -67,6 +67,7 @@
     waterLog: {},        // yyyy-mm-dd → [{ ml, at }]
     cardio: {},          // yyyy-mm-dd → [{ id, type, minutes, kcal, at }]
     bodyMeasurements: [],// [{ kind, value, recordedAt }] kind: chest/arm/waist/thigh/bodyFat/etc
+    onboarded: false,    // first-launch onboarding seen
     activeWorkoutId: null
   });
 
@@ -570,7 +571,54 @@
       wrap.appendChild(weightChart(points));
     }
 
+    // 7-day calorie trend
+    const calorieDays = [];
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date(day);
+      d.setDate(d.getDate() - i);
+      const k = LOGIC.dateKey(d);
+      const t = LOGIC.totalsForDate(state.meals, k);
+      calorieDays.push({ x: d.getTime(), y: Math.round(t.cal) });
+    }
+    if (calorieDays.some(p => p.y > 0)) {
+      wrap.appendChild(weeklyCalorieChart(calorieDays, state.goals.calories));
+    }
+
     return wrap;
+  }
+
+  function weeklyCalorieChart(points, goal) {
+    const w = 358 - 32, hpx = 160;
+    const max = Math.max(goal, ...points.map(p => p.y)) * 1.1 + 1;
+    const barW = (w - 14) / points.length - 6;
+    let bars = '';
+    for (let i = 0; i < points.length; i++) {
+      const p = points[i];
+      const x = 8 + i * (barW + 6);
+      const bh = Math.max(2, (p.y / max) * (hpx - 30));
+      const y = hpx - 18 - bh;
+      const colour = p.y > goal ? 'var(--red)'
+                   : p.y > goal * 0.85 ? 'var(--green)'
+                   : 'var(--orange)';
+      bars += `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${bh.toFixed(1)}" rx="3" style="fill: ${colour}; opacity: 0.85"/>`;
+      const label = new Date(p.x).toLocaleDateString(undefined, { weekday: 'narrow' });
+      bars += `<text x="${(x + barW / 2).toFixed(1)}" y="${(hpx - 4).toFixed(1)}" text-anchor="middle" style="fill: var(--label-secondary); font: 10px var(--font);">${label}</text>`;
+    }
+    // Goal line
+    const goalY = hpx - 18 - (goal / max) * (hpx - 30);
+    bars += `<line x1="0" y1="${goalY.toFixed(1)}" x2="${w}" y2="${goalY.toFixed(1)}" stroke="var(--label-tertiary)" stroke-dasharray="4 4" stroke-width="1"/>`;
+    bars += `<text x="${w - 4}" y="${(goalY - 4).toFixed(1)}" text-anchor="end" style="fill: var(--label-secondary); font: 10px var(--font);">goal ${goal}</text>`;
+
+    const svgWrap = document.createElement('div');
+    svgWrap.innerHTML = `<svg class="chart-svg" viewBox="0 0 ${w} ${hpx}" preserveAspectRatio="none">${bars}</svg>`;
+    const avg = Math.round(points.reduce((s, p) => s + p.y, 0) / Math.max(1, points.filter(p => p.y > 0).length));
+    return h('div', { class: 'chart-card' },
+      h('div', { class: 'chart-card-header' },
+        h('span', { class: 'chart-card-title' }, 'Calories — last 7 days'),
+        h('span', { class: 'chart-card-value' }, avg + ' avg / ' + goal + ' goal')
+      ),
+      svgWrap.firstChild
+    );
   }
 
   function metricCell(iconName, colorVar, value, label) {
@@ -638,6 +686,13 @@
           title: 'Exercise library',
           accessory: 'chevron',
           onClick: openExerciseLibrary
+        }),
+        listRow({
+          icon: 'chart.bar.fill', iconBg: 'bg-purple',
+          title: 'Calendar',
+          subtitle: 'See workouts + meals by day',
+          accessory: 'chevron',
+          onClick: openCalendar
         })
       ]
     }));
@@ -786,12 +841,228 @@
         }),
         ...groups.map(g => listSection({
           header: g.name,
-          rows: g.sets.map((s, i) => listRow({
-            title: 'Set ' + (i + 1),
-            accessory: `${s.weight || 0} kg × ${s.reps || 0}`
-          }))
+          rows: [
+            listRow({
+              title: 'View progression',
+              icon: 'chart.line.uptrend.xyaxis', iconBg: 'bg-purple',
+              accessory: 'chevron',
+              onClick: () => { closeSheet(); openExerciseProgression(g.id, g.name); }
+            }),
+            ...g.sets.map((s, i) => listRow({
+              title: 'Set ' + (i + 1) + (s.isWarmup ? ' (warmup)' : ''),
+              accessory: `${s.weight || 0} kg × ${s.reps || 0}`
+            }))
+          ]
         }))
       ]
+    });
+  }
+
+  // ----- Per-exercise progression -----
+  function openExerciseProgression(exerciseId, exerciseName) {
+    const allSets = state.workouts.flatMap(w => w.sets.map(s => ({ ...s, id: setKey(s) })));
+    const exerciseSets = allSets.filter(s => s.exerciseId === exerciseId);
+    const completed = exerciseSets.filter(s => s.completed && !s.isWarmup);
+
+    // 1RM per session
+    const oneRmPoints = LOGIC.bestPerSession(completed.map(s => ({ ...s }))).map(p => ({
+      x: new Date(p.date).getTime(), y: p.oneRm
+    }));
+
+    // Volume per session
+    const volByDay = new Map();
+    for (const s of completed) {
+      const day = LOGIC.dateKey(new Date(s.performedAt));
+      volByDay.set(day, (volByDay.get(day) || 0) + (s.weight || 0) * (s.reps || 0));
+    }
+    const volPoints = [...volByDay.entries()]
+      .sort()
+      .map(([d, v]) => ({ x: new Date(d).getTime(), y: v }));
+
+    const prSet = LOGIC.detectPRs(allSets);
+
+    openSheet({
+      title: exerciseName,
+      leading: h('button', { class: 'btn-link', onClick: closeSheet }, 'Close'),
+      body: (() => {
+        const body = h('div');
+        if (completed.length === 0) {
+          body.appendChild(emptyState('chart.line.uptrend.xyaxis',
+            'No completed sets yet',
+            'Log a few sessions to see your progress.'));
+          return body;
+        }
+        // Charts
+        if (oneRmPoints.length >= 2) body.appendChild(progressChart('Estimated 1RM', oneRmPoints, 'kg', 'var(--blue)'));
+        if (volPoints.length >= 2)   body.appendChild(progressChart('Total volume', volPoints, 'kg', 'var(--orange)'));
+        // Best lift
+        const heaviest = completed.reduce((b, s) => (s.weight > (b?.weight || 0) ? s : b), null);
+        if (heaviest) {
+          body.appendChild(listSection({
+            header: 'Personal records',
+            rows: [
+              listRow({ title: 'Heaviest', accessory: heaviest.weight + ' kg × ' + heaviest.reps }),
+              listRow({ title: 'Best 1RM', accessory: Math.round(LOGIC.estimate1RM(heaviest.weight, heaviest.reps) * 10) / 10 + ' kg' }),
+              listRow({ title: 'Total sessions', accessory: String(volByDay.size) }),
+              listRow({ title: 'Total volume', accessory: Math.round([...volByDay.values()].reduce((a, b) => a + b, 0)).toLocaleString() + ' kg' })
+            ]
+          }));
+        }
+        // Session list
+        const sessions = [...volByDay.entries()].sort().reverse();
+        body.appendChild(listSection({
+          header: 'History',
+          rows: sessions.map(([day, vol]) => {
+            const daySets = completed.filter(s => LOGIC.dateKey(new Date(s.performedAt)) === day);
+            const best = daySets.reduce((b, s) => (s.weight > (b?.weight || 0) ? s : b), null);
+            const isPR = best && prSet.has(best.id);
+            return listRow({
+              title: new Date(day).toLocaleDateString(),
+              subtitle: best ? `Top: ${best.weight} kg × ${best.reps}${isPR ? ' ★ PR' : ''}` : '',
+              accessory: Math.round(vol) + ' kg'
+            });
+          })
+        }));
+        return body;
+      })()
+    });
+  }
+
+  function progressChart(title, points, unit, color) {
+    if (points.length === 0) return h('div');
+    const w = 358 - 32, hpx = 140;
+    const xMin = points[0].x, xMax = points[points.length - 1].x;
+    const ys = points.map(p => p.y);
+    const yMin = Math.min(...ys) * 0.95, yMax = Math.max(...ys) * 1.05;
+    const sx = (x) => ((x - xMin) / Math.max(1, (xMax - xMin))) * (w - 20) + 10;
+    const sy = (y) => hpx - ((y - yMin) / Math.max(0.1, (yMax - yMin))) * (hpx - 20) - 10;
+    const linePath = points.map((p, i) => (i === 0 ? 'M' : 'L') + sx(p.x).toFixed(1) + ',' + sy(p.y).toFixed(1)).join(' ');
+    const areaPath = linePath + ` L${sx(points[points.length - 1].x).toFixed(1)},${hpx} L${sx(points[0].x).toFixed(1)},${hpx} Z`;
+    const svgWrap = document.createElement('div');
+    svgWrap.innerHTML = `<svg class="chart-svg" viewBox="0 0 ${w} ${hpx}" preserveAspectRatio="none">
+      <line class="axis" x1="0" y1="${hpx-1}" x2="${w}" y2="${hpx-1}"/>
+      <path d="${areaPath}" style="fill:${color}; opacity:0.12"/>
+      <path d="${linePath}" style="fill:none; stroke:${color}; stroke-width:2; stroke-linejoin:round; stroke-linecap:round"/>
+      ${points.slice(-1).map(p => `<circle cx="${sx(p.x).toFixed(1)}" cy="${sy(p.y).toFixed(1)}" r="3" style="fill:${color}"/>`).join('')}
+    </svg>`;
+    const last = points[points.length - 1].y;
+    const first = points[0].y;
+    const delta = last - first;
+    return h('div', { class: 'chart-card' },
+      h('div', { class: 'chart-card-header' },
+        h('span', { class: 'chart-card-title' }, title),
+        h('span', { class: 'chart-card-value' }, (delta >= 0 ? '+' : '') + delta.toFixed(1) + ' ' + unit + ' · ' + points.length + ' sessions')
+      ),
+      svgWrap.firstChild
+    );
+  }
+
+  // ----- Calendar / history view -----
+  function openCalendar() {
+    let viewMonth = new Date();
+    viewMonth.setDate(1); viewMonth.setHours(0,0,0,0);
+    function build() {
+      const body = h('div');
+      const monthName = viewMonth.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+      // Header
+      body.appendChild(h('div', { style: { display: 'flex', alignItems: 'center', padding: '0 16px 8px', gap: '8px' } },
+        h('button', { class: 'icon-btn', onClick: () => { viewMonth = new Date(viewMonth); viewMonth.setMonth(viewMonth.getMonth()-1); replace(); } }, svg('chevron.left', { size: 18, strokeWidth: 2.5 })),
+        h('div', { style: { flex: '1', textAlign: 'center', font: '600 17px var(--font)' } }, monthName),
+        h('button', { class: 'icon-btn', onClick: () => { viewMonth = new Date(viewMonth); viewMonth.setMonth(viewMonth.getMonth()+1); replace(); } }, svg('chevron.right', { size: 18, strokeWidth: 2.5 }))
+      ));
+      // Day-of-week header
+      const dows = ['M','T','W','T','F','S','S'];
+      const grid = h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: '4px', padding: '0 16px' } });
+      for (const d of dows) grid.appendChild(h('div', { style: { textAlign: 'center', font: '500 11px var(--font)', color: 'var(--label-secondary)', padding: '4px 0' } }, d));
+      const firstDay = new Date(viewMonth);
+      const lastDay = new Date(viewMonth.getFullYear(), viewMonth.getMonth() + 1, 0);
+      // Monday-first leading blanks
+      let leading = (firstDay.getDay() + 6) % 7;
+      for (let i = 0; i < leading; i++) grid.appendChild(h('div'));
+      for (let d = 1; d <= lastDay.getDate(); d++) {
+        const date = new Date(viewMonth.getFullYear(), viewMonth.getMonth(), d);
+        const key = LOGIC.dateKey(date);
+        const wkCount = state.workouts.filter(w => LOGIC.dateKey(new Date(w.startedAt)) === key).length;
+        const slots = state.meals[key] || {};
+        const mealCount = ['breakfast','lunch','dinner','snack'].filter(s => (slots[s]||[]).length > 0).length;
+        const cell = h('button', {
+          style: {
+            appearance: 'none', border: 0, padding: 0, cursor: 'pointer',
+            background: isSameDay(date, today()) ? 'var(--tint)' : 'var(--fill-tertiary)',
+            color: isSameDay(date, today()) ? '#fff' : 'var(--label-primary)',
+            borderRadius: '8px',
+            aspectRatio: '1', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+            font: '500 14px var(--font)', position: 'relative'
+          },
+          onClick: () => openDayDetail(key)
+        }, String(d));
+        // Activity dots
+        if (wkCount > 0 || mealCount > 0) {
+          const dots = h('div', { style: { display: 'flex', gap: '2px', marginTop: '2px' } });
+          if (wkCount > 0) dots.appendChild(h('span', { style: { width: '4px', height: '4px', borderRadius: '50%', background: 'var(--orange)' } }));
+          if (mealCount > 0) dots.appendChild(h('span', { style: { width: '4px', height: '4px', borderRadius: '50%', background: 'var(--green)' } }));
+          cell.appendChild(dots);
+        }
+        grid.appendChild(cell);
+      }
+      body.appendChild(grid);
+      // Legend
+      body.appendChild(h('div', { style: { display: 'flex', gap: '16px', padding: '12px 16px 0', font: '500 12px var(--font)', color: 'var(--label-secondary)' } },
+        h('span', null,
+          h('span', { style: { display: 'inline-block', width: '6px', height: '6px', borderRadius: '50%', background: 'var(--orange)', marginRight: '6px' } }),
+          'workout'
+        ),
+        h('span', null,
+          h('span', { style: { display: 'inline-block', width: '6px', height: '6px', borderRadius: '50%', background: 'var(--green)', marginRight: '6px' } }),
+          'meals'
+        )
+      ));
+      return body;
+    }
+    function replace() {
+      const c = $('.sheet-content');
+      if (c) { c.innerHTML = ''; c.appendChild(build()); }
+    }
+    openSheet({
+      title: 'Calendar',
+      leading: h('button', { class: 'btn-link', onClick: closeSheet }, 'Close'),
+      body: build()
+    });
+  }
+  function isSameDay(a, b) { return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate(); }
+  function openDayDetail(key) {
+    const wks = state.workouts.filter(w => LOGIC.dateKey(new Date(w.startedAt)) === key);
+    const slots = state.meals[key] || {};
+    const totals = LOGIC.totalsForDate(state.meals, key);
+    const date = new Date(key + 'T12:00:00');
+    const body = h('div');
+    body.appendChild(listSection({
+      header: 'Nutrition',
+      rows: [
+        listRow({ title: 'Calories', accessory: Math.round(totals.cal) + ' kcal' }),
+        listRow({ title: 'Protein',  accessory: Math.round(totals.p) + ' g' }),
+        listRow({ title: 'Carbs',    accessory: Math.round(totals.c) + ' g' }),
+        listRow({ title: 'Fat',      accessory: Math.round(totals.f) + ' g' })
+      ]
+    }));
+    if (wks.length > 0) {
+      body.appendChild(listSection({
+        header: 'Workouts',
+        rows: wks.map(w => listRow({
+          icon: 'dumbbell.fill', iconBg: 'bg-orange',
+          title: w.name || 'Workout',
+          subtitle: w.sets.length + ' sets · ' + Math.round(LOGIC.totalVolume(w.sets)) + ' kg',
+          accessory: 'chevron',
+          onClick: () => { closeSheet(); openWorkoutDetail(w.id); }
+        }))
+      }));
+    } else {
+      body.appendChild(emptyState('dumbbell', 'No workouts that day'));
+    }
+    openSheet({
+      title: date.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' }),
+      leading: h('button', { class: 'btn-link', onClick: () => { closeSheet(); openCalendar(); } }, '‹ Calendar'),
+      body
     });
   }
 
@@ -1246,6 +1517,10 @@
         h('div', { class: 'meal-card-icon ' + ic_bg }, svg(ic, { size: 16 })),
         h('div', { class: 'meal-card-title' }, label),
         items.length > 0 && h('div', { class: 'meal-card-cal' }, Math.round(cal) + ' kcal'),
+        items.length > 0 ? h('button', {
+          class: 'icon-btn', style: { padding: '4px', fontSize: '18px', lineHeight: '1' },
+          onClick: () => saveMealAsTemplate(key2, key)
+        }, '🔖') : null,
         h('button', { class: 'meal-card-add', onClick: () => openFoodSearch(key2) }, svg('plus', { size: 14, strokeWidth: 2.6 }))
       ));
       if (items.length === 0) {
@@ -1419,7 +1694,7 @@
     }
     function build() {
       const body = h('div');
-      // Action row: scan / quick-add / custom food
+      // Action row: scan / quick-add / custom food / recipes / saved meals
       body.appendChild(h('div', { class: 'list-section' },
         h('div', { class: 'list-rows' },
           listRow({
@@ -1434,6 +1709,20 @@
             subtitle: 'No food, just numbers',
             accessory: 'chevron',
             onClick: () => { closeSheet(); openQuickAdd(slot); }
+          }),
+          listRow({
+            icon: 'fork.knife.fill', iconBg: 'bg-orange',
+            title: 'Recipes',
+            subtitle: state.recipes.length + ' saved',
+            accessory: 'chevron',
+            onClick: () => { closeSheet(); openRecipesSheet(slot); }
+          }),
+          listRow({
+            icon: 'list.bullet.rectangle.fill', iconBg: 'bg-teal',
+            title: 'Saved meals',
+            subtitle: state.savedMeals.length + ' saved',
+            accessory: 'chevron',
+            onClick: () => { closeSheet(); openSavedMealsSheet(slot); }
           }),
           listRow({
             icon: 'square.and.pencil', iconBg: 'bg-purple',
@@ -1507,6 +1796,297 @@
       leading: h('button', { class: 'btn-link', onClick: closeSheet }, 'Cancel'),
       body: build()
     });
+  }
+
+  // ----- Recipes -----
+  function openRecipesSheet(slot) {
+    function build() {
+      const body = h('div');
+      body.appendChild(h('div', { class: 'list-section' },
+        h('div', { class: 'list-rows' },
+          listRow({
+            icon: 'plus', iconBg: 'bg-purple',
+            title: 'Create recipe',
+            accessory: 'chevron',
+            onClick: () => { closeSheet(); openRecipeEditor(slot); }
+          })
+        )
+      ));
+      if (state.recipes.length === 0) {
+        body.appendChild(emptyState('fork.knife', 'No recipes yet',
+          'Recipes combine multiple foods into one logged item.'));
+      } else {
+        body.appendChild(listSection({
+          header: 'Your recipes',
+          rows: state.recipes.map(r => {
+            const m = LOGIC.recipePerServing(r, foodById);
+            return listRow({
+              title: r.name,
+              subtitle: r.servings + (r.servings === 1 ? ' serving · ' : ' servings · ') +
+                Math.round(m.cal) + ' kcal/serving',
+              accessory: 'chevron',
+              onClick: () => {
+                if (slot) { closeSheet(); logRecipeAsFood(r, slot); }
+                else openRecipeEditor(slot, r.id);
+              }
+            });
+          })
+        }));
+        body.appendChild(listSection({
+          rows: state.recipes.map(r => listRow({
+            icon: 'square.and.pencil', iconBg: 'bg-blue',
+            title: 'Edit: ' + r.name,
+            onClick: () => { closeSheet(); openRecipeEditor(slot, r.id); }
+          }))
+        }));
+      }
+      return body;
+    }
+    openSheet({
+      title: slot ? 'Add recipe to ' + capitalize(slot) : 'Recipes',
+      leading: h('button', { class: 'btn-link', onClick: closeSheet }, 'Close'),
+      body: build()
+    });
+  }
+
+  function logRecipeAsFood(recipe, slot) {
+    const m = LOGIC.recipePerServing(recipe, foodById);
+    const entry = {
+      foodId: 'recipe:' + recipe.id,
+      foodName: recipe.name,
+      grams: 0,
+      cal: m.cal, p: m.p, c: m.c, fat: m.f, fiber: m.fiber,
+      consumedAt: new Date().toISOString(),
+      servings: 1, recipeId: recipe.id
+    };
+    const key = LOGIC.dateKey(viewDate);
+    state.meals[key] = state.meals[key] || { breakfast: [], lunch: [], dinner: [], snack: [] };
+    state.meals[key][slot].push(entry);
+    save(); rerender();
+    toast('+1 ' + recipe.name);
+  }
+
+  function openRecipeEditor(returnSlot, recipeId) {
+    const editing = recipeId ? state.recipes.find(r => r.id === recipeId) : null;
+    const r = editing
+      ? JSON.parse(JSON.stringify(editing))
+      : { id: 'recipe-' + Date.now(), name: '', servings: 1, ingredients: [] };
+    function build() {
+      const m = LOGIC.recipePerServing(r, foodById);
+      const body = h('div');
+      body.appendChild(listSection({
+        header: 'Recipe',
+        rows: [
+          listRow({
+            title: 'Name',
+            rightInput: (() => {
+              const i = h('input', { type: 'text', class: 'row-input', placeholder: 'e.g., Power oats', value: r.name });
+              i.style.textAlign = 'right';
+              i.addEventListener('input', () => r.name = i.value);
+              return i;
+            })()
+          }),
+          listRow({
+            title: 'Servings',
+            rightInput: numericInput(r.servings, v => { r.servings = Math.max(1, Math.round(v || 1)); replace(); }, '')
+          })
+        ]
+      }));
+      // Ingredients
+      const ingRows = r.ingredients.map((ing, idx) => {
+        const food = foodById(ing.foodId);
+        const cal = food ? Math.round(food.cal * (ing.grams || 0) / 100) : 0;
+        return listRow({
+          title: food ? food.name : '(missing food)',
+          subtitle: ing.grams + ' g · ' + cal + ' kcal',
+          accessory: h('button', { class: 'icon-btn', style: { color: 'var(--red)' }, onClick: () => {
+            r.ingredients.splice(idx, 1); replace();
+          } }, svg('xmark', { size: 16, strokeWidth: 2.5 }))
+        });
+      });
+      ingRows.push(listRow({
+        icon: 'plus', iconBg: 'bg-green',
+        title: 'Add ingredient',
+        accessory: 'chevron',
+        onClick: () => openIngredientPicker(r, replace)
+      }));
+      body.appendChild(listSection({ header: 'Ingredients', rows: ingRows }));
+      body.appendChild(listSection({
+        header: 'Per serving',
+        rows: [
+          listRow({ title: 'Calories', accessory: Math.round(m.cal) + ' kcal' }),
+          listRow({ title: 'Protein',  accessory: m.p.toFixed(1) + ' g' }),
+          listRow({ title: 'Carbs',    accessory: m.c.toFixed(1) + ' g' }),
+          listRow({ title: 'Fat',      accessory: m.f.toFixed(1) + ' g' })
+        ]
+      }));
+      body.appendChild(h('div', { style: { padding: '0 16px', marginTop: '8px' } },
+        h('button', { class: 'btn-primary', onClick: () => {
+          if (!r.name) return toast('Name required');
+          if (r.ingredients.length === 0) return toast('Add an ingredient');
+          if (editing) {
+            const i = state.recipes.findIndex(x => x.id === r.id);
+            state.recipes[i] = r;
+          } else {
+            state.recipes.push(r);
+          }
+          save(); closeSheet();
+          openRecipesSheet(returnSlot);
+        } }, editing ? 'Save changes' : 'Save recipe')
+      ));
+      if (editing) {
+        body.appendChild(h('div', { style: { padding: '8px 16px 0' } },
+          h('button', { class: 'btn-destructive', onClick: () => {
+            if (!confirm('Delete this recipe?')) return;
+            state.recipes = state.recipes.filter(x => x.id !== r.id);
+            save(); closeSheet();
+            openRecipesSheet(returnSlot);
+          } }, 'Delete recipe')
+        ));
+      }
+      return body;
+    }
+    function replace() {
+      const c = $('.sheet-content');
+      if (c) { c.innerHTML = ''; c.appendChild(build()); }
+    }
+    openSheet({
+      title: editing ? 'Edit recipe' : 'New recipe',
+      leading: h('button', { class: 'btn-link', onClick: () => { closeSheet(); openRecipesSheet(returnSlot); } }, 'Cancel'),
+      body: build()
+    });
+  }
+  function openIngredientPicker(recipe, onDone) {
+    let q = '';
+    function build() {
+      const body = h('div');
+      body.appendChild(searchField({ placeholder: 'Search foods', value: q, onInput: v => { q = v; replace(); } }));
+      const all = [...FOODS, ...state.customFoods];
+      const filtered = q
+        ? all.filter(f => f.name.toLowerCase().includes(q.toLowerCase()))
+        : all.slice(0, 30);
+      body.appendChild(listSection({
+        rows: filtered.map(f => listRow({
+          title: f.name,
+          subtitle: Math.round(f.cal) + ' kcal/100g',
+          accessory: 'chevron',
+          onClick: () => {
+            const grams = parseFloat(prompt('Grams of ' + f.name + '?', String(f.servingSize || 100)) || '0');
+            if (grams > 0) {
+              recipe.ingredients.push({ foodId: f.id, grams });
+              closeSheet();
+              if (onDone) onDone();
+            }
+          }
+        }))
+      }));
+      return body;
+    }
+    function replace() {
+      const c = $('.sheet-content');
+      if (c) { c.innerHTML = ''; c.appendChild(build()); }
+    }
+    openSheet({
+      title: 'Pick ingredient',
+      leading: h('button', { class: 'btn-link', onClick: () => { closeSheet(); if (onDone) onDone(); } }, 'Cancel'),
+      body: build()
+    });
+  }
+  function foodById(id) {
+    if (!id) return null;
+    if (id.startsWith && id.startsWith('recipe:')) {
+      const rid = id.slice(7);
+      const r = state.recipes.find(x => x.id === rid);
+      if (!r) return null;
+      const m = LOGIC.recipePerServing(r, foodById);
+      return { id, name: r.name, cal: m.cal, p: m.p, c: m.c, f: m.f, fiber: m.fiber,
+               servingSize: 0, servingDesc: '1 serving' };
+    }
+    return [...FOODS, ...state.customFoods].find(f => f.id === id);
+  }
+
+  // ----- Saved meals -----
+  function openSavedMealsSheet(slot) {
+    function build() {
+      const body = h('div');
+      if (state.savedMeals.length === 0) {
+        body.appendChild(emptyState('fork.knife', 'No saved meals yet',
+          'Save a meal you eat often by tapping the bookmark on its meal card.'));
+      } else {
+        body.appendChild(listSection({
+          header: 'Your saved meals',
+          rows: state.savedMeals.map(m => {
+            const totals = (m.items || []).reduce((s, it) => {
+              const food = foodById(it.foodId);
+              if (!food) return s;
+              const f = it.grams / 100;
+              return { cal: s.cal + food.cal * f, items: s.items + 1 };
+            }, { cal: 0, items: 0 });
+            return listRow({
+              title: m.name,
+              subtitle: totals.items + ' items · ' + Math.round(totals.cal) + ' kcal',
+              accessory: 'chevron',
+              onClick: () => { closeSheet(); logSavedMeal(m, slot); }
+            });
+          })
+        }));
+        body.appendChild(listSection({
+          rows: state.savedMeals.map(m => listRow({
+            icon: 'trash', iconBg: 'bg-red',
+            title: 'Delete: ' + m.name,
+            onClick: () => {
+              if (!confirm('Delete \'' + m.name + '\'?')) return;
+              state.savedMeals = state.savedMeals.filter(x => x.id !== m.id);
+              save(); replace();
+            }
+          }))
+        }));
+      }
+      return body;
+    }
+    function replace() {
+      const c = $('.sheet-content');
+      if (c) { c.innerHTML = ''; c.appendChild(build()); }
+    }
+    openSheet({
+      title: slot ? 'Add saved meal to ' + capitalize(slot) : 'Saved meals',
+      leading: h('button', { class: 'btn-link', onClick: closeSheet }, 'Close'),
+      body: build()
+    });
+  }
+  function logSavedMeal(meal, slot) {
+    const key = LOGIC.dateKey(viewDate);
+    state.meals[key] = state.meals[key] || { breakfast: [], lunch: [], dinner: [], snack: [] };
+    let added = 0;
+    for (const it of (meal.items || [])) {
+      const food = foodById(it.foodId);
+      if (!food) continue;
+      const f = it.grams / 100;
+      state.meals[key][slot].push({
+        foodId: food.id, foodName: food.name,
+        grams: it.grams,
+        cal: food.cal * f, p: food.p * f, c: food.c * f, fat: food.f * f, fiber: (food.fiber || 0) * f,
+        consumedAt: new Date().toISOString()
+      });
+      added++;
+    }
+    save(); rerender();
+    toast('Added ' + added + ' items');
+  }
+  function saveMealAsTemplate(slot, dateKey) {
+    const items = (state.meals[dateKey] || {})[slot] || [];
+    if (items.length === 0) return toast('Meal is empty');
+    const name = prompt('Save \'' + capitalize(slot) + '\' as…', 'My ' + slot);
+    if (!name) return;
+    state.savedMeals.push({
+      id: 'sm-' + Date.now(),
+      name,
+      items: items.filter(e => e.foodId && e.foodId !== 'quickadd' && e.grams).map(e => ({
+        foodId: e.foodId, grams: e.grams
+      }))
+    });
+    save();
+    toast('Saved meal');
   }
 
   function openQuickAdd(slot) {
@@ -1793,6 +2373,41 @@
       ]
     }));
 
+    // Library section
+    wrap.appendChild(listSection({
+      header: 'Library',
+      rows: [
+        listRow({
+          icon: 'fork.knife.fill', iconBg: 'bg-orange',
+          title: 'Recipes',
+          subtitle: state.recipes.length + ' saved',
+          accessory: 'chevron',
+          onClick: () => openRecipesSheet(null)
+        }),
+        listRow({
+          icon: 'list.bullet.rectangle.fill', iconBg: 'bg-teal',
+          title: 'Saved meals',
+          subtitle: state.savedMeals.length + ' saved',
+          accessory: 'chevron',
+          onClick: () => openSavedMealsSheet(null)
+        }),
+        listRow({
+          icon: 'scalemass', iconBg: 'bg-blue',
+          title: 'Body measurements',
+          subtitle: state.bodyMeasurements.length + ' entries',
+          accessory: 'chevron',
+          onClick: openBodyMeasurements
+        }),
+        listRow({
+          icon: 'list.bullet.rectangle.fill', iconBg: 'bg-indigo',
+          title: 'Routines',
+          subtitle: state.routines.length + ' saved',
+          accessory: 'chevron',
+          onClick: openRoutinesPicker
+        })
+      ]
+    }));
+
     // Sync / health (display-only here)
     wrap.appendChild(listSection({
       header: 'Integrations',
@@ -1855,6 +2470,88 @@
       const bytes = (localStorage.getItem(STORAGE_KEY) || '').length;
       return (bytes / 1024).toFixed(1) + ' KB';
     } catch { return '—'; }
+  }
+
+  function openBodyMeasurements() {
+    const kinds = [
+      { key: 'chest',   label: 'Chest',     unit: 'cm' },
+      { key: 'waist',   label: 'Waist',     unit: 'cm' },
+      { key: 'hips',    label: 'Hips',      unit: 'cm' },
+      { key: 'arm',     label: 'Arm',       unit: 'cm' },
+      { key: 'thigh',   label: 'Thigh',     unit: 'cm' },
+      { key: 'neck',    label: 'Neck',      unit: 'cm' },
+      { key: 'bodyFat', label: 'Body fat',  unit: '%'  }
+    ];
+    function build() {
+      const body = h('div');
+      for (const k of kinds) {
+        const entries = state.bodyMeasurements.filter(m => m.kind === k.key)
+          .sort((a, b) => new Date(b.recordedAt) - new Date(a.recordedAt));
+        const latest = entries[0];
+        body.appendChild(listSection({
+          header: k.label,
+          rows: [
+            listRow({
+              title: 'Log new',
+              icon: 'plus', iconBg: 'bg-green',
+              accessory: 'chevron',
+              onClick: () => {
+                const v = parseFloat(prompt(k.label + ' (' + k.unit + ')', latest ? String(latest.value) : '') || '');
+                if (!isFinite(v) || v <= 0) return;
+                state.bodyMeasurements.push({
+                  id: 'bm-' + Date.now(),
+                  kind: k.key, value: v,
+                  recordedAt: new Date().toISOString()
+                });
+                save(); replace();
+              }
+            }),
+            ...(latest ? [listRow({
+              title: 'Latest',
+              accessory: latest.value + ' ' + k.unit + '  ·  ' + relativeDate(new Date(latest.recordedAt))
+            })] : []),
+            ...(entries.length > 1 ? [listRow({
+              title: 'History (' + entries.length + ')',
+              accessory: 'chevron',
+              onClick: () => openMeasurementHistory(k)
+            })] : [])
+          ]
+        }));
+      }
+      return body;
+    }
+    function replace() {
+      const c = $('.sheet-content');
+      if (c) { c.innerHTML = ''; c.appendChild(build()); }
+    }
+    openSheet({
+      title: 'Body measurements',
+      leading: h('button', { class: 'btn-link', onClick: closeSheet }, 'Close'),
+      body: build()
+    });
+  }
+  function openMeasurementHistory(kind) {
+    const entries = state.bodyMeasurements.filter(m => m.kind === kind.key)
+      .sort((a, b) => new Date(b.recordedAt) - new Date(a.recordedAt));
+    const points = [...entries].reverse().map(m => ({ x: new Date(m.recordedAt).getTime(), y: m.value }));
+    const body = h('div');
+    if (points.length >= 2) body.appendChild(progressChart(kind.label + ' (' + kind.unit + ')', points, kind.unit, 'var(--blue)'));
+    body.appendChild(listSection({
+      header: 'History',
+      rows: entries.map((e, idx) => listRow({
+        title: e.value + ' ' + kind.unit,
+        subtitle: new Date(e.recordedAt).toLocaleString(),
+        accessory: h('button', { class: 'icon-btn', style: { color: 'var(--red)' }, onClick: () => {
+          state.bodyMeasurements = state.bodyMeasurements.filter(x => x.id !== e.id);
+          save(); closeSheet(); openMeasurementHistory(kind);
+        } }, svg('xmark', { size: 16, strokeWidth: 2.5 }))
+      }))
+    }));
+    openSheet({
+      title: kind.label,
+      leading: h('button', { class: 'btn-link', onClick: () => { closeSheet(); openBodyMeasurements(); } }, '‹ Back'),
+      body
+    });
   }
 
   function loadDemoData() {
@@ -2350,6 +3047,105 @@
     tickStatusBar();
     setInterval(tickStatusBar, 30000);
     rerender();
+    if (!state.onboarded) {
+      // Defer slightly so initial paint settles first.
+      setTimeout(showOnboarding, 200);
+    }
+  }
+
+  // ----- Onboarding -----
+  function showOnboarding() {
+    let page = 0;
+    const pages = [
+      {
+        emoji: '👋', icon: 'house.fill', tint: 'var(--blue)',
+        title: 'Welcome to Fit Buddy',
+        body: 'One app for your workouts and your nutrition. No subscription, no account, no nonsense.'
+      },
+      {
+        emoji: '🎯', icon: 'flame.fill', tint: 'var(--orange)',
+        title: 'Track what matters',
+        body: 'Calories and macros, water, body weight, every set you lift, every PR. Personal records auto-detected.'
+      },
+      {
+        emoji: '🚀', icon: 'play.fill', tint: 'var(--green)',
+        title: 'Get started',
+        body: 'Tap "Load demo data" in You → Test tools to fill the app with realistic sample data, or jump right in and log your first workout.'
+      }
+    ];
+    function render() {
+      const p = pages[page];
+      const overlay = document.getElementById('onboarding-overlay');
+      const target = overlay || h('div', { id: 'onboarding-overlay' });
+      target.innerHTML = '';
+      target.style.cssText = `
+        position: absolute; inset: 0; z-index: 300;
+        background: var(--bg-system);
+        display: flex; flex-direction: column; align-items: center; justify-content: center;
+        padding: 64px 32px;
+        animation: fadeIn 0.3s ease;
+      `;
+      target.appendChild(h('div', {
+        style: {
+          width: '120px', height: '120px', borderRadius: '32px',
+          background: p.tint, color: '#fff',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          font: '64px var(--font)',
+          marginBottom: '32px'
+        }
+      }, p.emoji));
+      target.appendChild(h('h1', {
+        style: {
+          font: '700 28px var(--font)', textAlign: 'center', margin: '0 0 12px',
+          letterSpacing: '0.37px'
+        }
+      }, p.title));
+      target.appendChild(h('p', {
+        style: {
+          font: '400 17px/1.4 var(--font)', textAlign: 'center',
+          color: 'var(--label-secondary)', margin: '0 0 32px', maxWidth: '320px'
+        }
+      }, p.body));
+      // Page dots
+      const dots = h('div', { style: { display: 'flex', gap: '6px', marginBottom: '40px' } });
+      pages.forEach((_, i) => dots.appendChild(h('span', {
+        style: {
+          width: i === page ? '20px' : '6px', height: '6px',
+          borderRadius: '3px',
+          background: i === page ? 'var(--tint)' : 'var(--label-tertiary)',
+          transition: 'width 0.2s'
+        }
+      })));
+      target.appendChild(dots);
+      // Buttons
+      const btnRow = h('div', { style: { display: 'flex', gap: '12px', width: '100%' } });
+      if (page > 0) {
+        btnRow.appendChild(h('button', {
+          class: 'btn-secondary', style: { flex: '1' },
+          onClick: () => { page--; render(); }
+        }, 'Back'));
+      } else {
+        btnRow.appendChild(h('button', {
+          class: 'btn-secondary', style: { flex: '1' },
+          onClick: dismissOnboarding
+        }, 'Skip'));
+      }
+      btnRow.appendChild(h('button', {
+        class: 'btn-primary', style: { flex: '2' },
+        onClick: () => {
+          if (page < pages.length - 1) { page++; render(); }
+          else dismissOnboarding();
+        }
+      }, page < pages.length - 1 ? 'Next' : 'Get started'));
+      target.appendChild(btnRow);
+      if (!overlay) $('#phone').appendChild(target);
+    }
+    function dismissOnboarding() {
+      state.onboarded = true; save();
+      const overlay = document.getElementById('onboarding-overlay');
+      if (overlay) overlay.remove();
+    }
+    render();
   }
 
   global.UFB_LOGIC = LOGIC;  // for any external test harness
