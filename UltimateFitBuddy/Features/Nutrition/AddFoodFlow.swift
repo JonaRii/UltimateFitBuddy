@@ -36,6 +36,9 @@ struct AddFoodFlow: View {
                     NavigationLink(destination: QuickAddView(onAdd: addQuickEntry)) {
                         Label("Quick add calories", systemImage: "plus.circle")
                     }
+                    NavigationLink(destination: PickRecipeView(onPick: addRecipeEntry)) {
+                        Label("Recipe", systemImage: "fork.knife")
+                    }
                     NavigationLink(destination: ManualFoodEditor(onSave: { food in
                         addEntry(food: food, grams: food.servingSizeG)
                     })) {
@@ -108,6 +111,27 @@ struct AddFoodFlow: View {
                 statusMessage = "Couldn't find \(code) in Open Food Facts. Add manually?"
             }
         }
+    }
+
+    private func addRecipeEntry(recipe: Recipe, servings: Double) {
+        let meal = ensureMeal()
+        // Compute per-serving once, scale by servings count.
+        let descriptor = FetchDescriptor<Food>()
+        let allFoods = (try? modelContext.fetch(descriptor)) ?? []
+        let perServing = recipe.perServing { id in allFoods.first { $0.id == id } }
+        let entry = FoodEntry(food: nil, gramsConsumed: 0)
+        entry.foodNameSnapshot = recipe.name
+        entry.caloriesSnapshot = perServing.calories * servings
+        entry.proteinSnapshot = perServing.protein * servings
+        entry.carbsSnapshot = perServing.carbs * servings
+        entry.fatSnapshot = perServing.fat * servings
+        entry.consumedAt = .now
+        entry.meal = meal
+        modelContext.insert(entry)
+        try? modelContext.save()
+        Task { await appState.healthKit.saveFoodEntry(macros: entry.macros, at: entry.consumedAt) }
+        onClose()
+        dismiss()
     }
 
     private func addQuickEntry(kcal: Double, protein: Double, carbs: Double, fat: Double) {
@@ -211,6 +235,55 @@ struct FoodPortionSheet: View {
                     Button("Cancel") { dismiss() }
                 }
             }
+        }
+    }
+}
+
+struct PickRecipeView: View {
+    @Environment(\.dismiss) private var dismiss
+    @Query(sort: [SortDescriptor(\Recipe.createdAt, order: .reverse)]) private var recipes: [Recipe]
+    var onPick: (Recipe, Double) -> Void
+
+    @State private var picked: Recipe?
+    @State private var servings: Double = 1
+
+    var body: some View {
+        if let r = picked {
+            Form {
+                Section(r.name) {
+                    Stepper(value: $servings, in: 0.25...10, step: 0.25) {
+                        Text(String(format: "Servings: %.2g", servings))
+                    }
+                }
+                Button("Add") {
+                    onPick(r, servings)
+                    dismiss()
+                }
+            }
+            .navigationTitle("How much?")
+        } else {
+            List(recipes) { r in
+                Button {
+                    picked = r
+                    servings = 1
+                } label: {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(r.name).font(.headline).foregroundStyle(.primary)
+                        Text("\(r.servings) servings")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .overlay {
+                if recipes.isEmpty {
+                    ContentUnavailableView(
+                        "No recipes yet",
+                        systemImage: "fork.knife",
+                        description: Text("Build a recipe in You → Library → Recipes.")
+                    )
+                }
+            }
+            .navigationTitle("Pick recipe")
         }
     }
 }
