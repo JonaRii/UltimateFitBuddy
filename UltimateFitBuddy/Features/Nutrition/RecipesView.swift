@@ -94,7 +94,7 @@ struct RecipeEditorView: View {
 
     private func ingredientLabel(at i: Int) -> String {
         let g = Int(grams[i])
-        let cal = Int((food(for: foodIds[i])?.cal ?? 0) * grams[i] / 100)
+        let cal = Int((food(for: foodIds[i])?.caloriesPer100g ?? 0) * grams[i] / 100)
         return "\(g) g · \(cal) kcal"
     }
 
@@ -237,7 +237,7 @@ struct IngredientPicker: View {
             } label: {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(f.name).font(.headline).foregroundStyle(.primary)
-                    Text("\(Int(f.cal)) kcal/100g")
+                    Text("\(Int(f.caloriesPer100g)) kcal/100g")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }

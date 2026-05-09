@@ -62,6 +62,11 @@ struct ProfileView: View {
                     } label: {
                         Label("Routines", systemImage: "list.bullet.rectangle")
                     }
+                    NavigationLink {
+                        BodyMeasurementsView()
+                    } label: {
+                        Label("Body measurements", systemImage: "ruler")
+                    }
                 }
                 Section("Apple Health") {
                     HStack {

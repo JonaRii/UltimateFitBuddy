@@ -28,7 +28,8 @@ enum AppModelContainer {
         BodyMeasurement.self,
         WaterEntry.self,
         CardioEntry.self,
-        Recipe.self
+        Recipe.self,
+        SavedMeal.self
     ]
 }
 
