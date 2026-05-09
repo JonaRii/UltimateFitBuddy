@@ -1,0 +1,34 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(xcodegen:*)",
+      "Bash(xcodebuild:*)",
+      "Bash(swift:*)",
+      "Bash(xcrun:*)",
+      "Bash(simctl:*)",
+      "Bash(devicectl:*)",
+      "Bash(brew:*)",
+      "Bash(python3:*)",
+      "Bash(python:*)",
+      "Bash(pip:*)",
+      "Bash(pip3:*)",
+      "Bash(./data-pipeline/*)",
+      "Bash(ls:*)",
+      "Bash(open:*)",
+      "Bash(file:*)",
+      "Bash(unzip:*)",
+      "Bash(curl:*)",
+      "Bash(sqlite3:*)",
+      "Read(./**)",
+      "Edit(./**)",
+      "Write(./**)",
+      "Glob(./**)",
+      "Grep(./**)"
+    ],
+    "deny": [
+      "Bash(rm -rf:*)",
+      "Bash(git push --force:*)",
+      "Bash(git push -f:*)"
+    ]
+  }
+}

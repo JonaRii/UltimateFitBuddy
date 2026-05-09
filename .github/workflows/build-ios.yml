@@ -1,0 +1,143 @@
+name: Build iOS Simulator
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    name: Build for iPhone Simulator
+    runs-on: macos-14
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          sw_vers
+          xcodebuild -version
+          swift --version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Cache DerivedData
+        uses: actions/cache@v4
+        with:
+          path: build
+          key: deriveddata-${{ runner.os }}-${{ hashFiles('project.yml', 'UltimateFitBuddy/**/*.swift') }}
+          restore-keys: deriveddata-${{ runner.os }}-
+
+      - name: Build for iPhone Simulator
+        run: |
+          set -euo pipefail
+          # Pick the most recent iOS 17+ runtime that the runner has installed.
+          DEST="generic/platform=iOS Simulator"
+          xcodebuild \
+            -project UltimateFitBuddy.xcodeproj \
+            -scheme UltimateFitBuddy \
+            -configuration Debug \
+            -destination "$DEST" \
+            -derivedDataPath build \
+            -sdk iphonesimulator \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY="" \
+            ONLY_ACTIVE_ARCH=NO \
+            build 2>&1 | tee build.log
+          echo "::group::Tail of build log"
+          tail -50 build.log
+          echo "::endgroup::"
+
+      - name: Locate built .app
+        id: locate
+        run: |
+          APP_PATH=$(find build -path "*Debug-iphonesimulator/UltimateFitBuddy.app" -type d | head -1)
+          if [ -z "$APP_PATH" ]; then
+            echo "Build did not produce a .app bundle"
+            exit 1
+          fi
+          echo "App: $APP_PATH"
+          echo "app_path=$APP_PATH" >> "$GITHUB_OUTPUT"
+
+      - name: Zip the simulator app for Appetize
+        run: |
+          APP_PATH="${{ steps.locate.outputs.app_path }}"
+          cd "$(dirname "$APP_PATH")"
+          zip -qry "$GITHUB_WORKSPACE/UltimateFitBuddy-sim.app.zip" "UltimateFitBuddy.app"
+          ls -lh "$GITHUB_WORKSPACE/UltimateFitBuddy-sim.app.zip"
+
+      - name: Upload .app artifact (downloadable from Actions UI)
+        uses: actions/upload-artifact@v4
+        with:
+          name: UltimateFitBuddy-iphonesim
+          path: UltimateFitBuddy-sim.app.zip
+          retention-days: 14
+
+      - name: Upload to Appetize.io
+        id: appetize
+        if: env.APPETIZE_API_TOKEN != ''
+        env:
+          APPETIZE_API_TOKEN: ${{ secrets.APPETIZE_API_TOKEN }}
+          APPETIZE_PUBLIC_KEY: ${{ secrets.APPETIZE_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${APPETIZE_PUBLIC_KEY:-}" ]; then
+            URL="https://api.appetize.io/v1/apps"
+          else
+            URL="https://api.appetize.io/v1/apps/${APPETIZE_PUBLIC_KEY}"
+          fi
+          RESPONSE=$(curl -s -X POST \
+            --user "${APPETIZE_API_TOKEN}:" \
+            -F "file=@UltimateFitBuddy-sim.app.zip" \
+            -F "platform=ios" \
+            -F "buttonText=Run Fit Buddy" \
+            "$URL")
+          echo "$RESPONSE" > appetize.json
+          PUBLIC_KEY=$(python3 -c "import json; print(json.load(open('appetize.json')).get('publicKey',''))")
+          MANAGE_URL=$(python3 -c "import json; print(json.load(open('appetize.json')).get('manageURL',''))" || true)
+          if [ -z "$PUBLIC_KEY" ]; then
+            echo "::error::Appetize upload failed:"
+            cat appetize.json
+            exit 1
+          fi
+          PREVIEW="https://appetize.io/app/${PUBLIC_KEY}?device=iphone15pro&osVersion=17.5"
+          echo "preview_url=$PREVIEW" >> "$GITHUB_OUTPUT"
+          echo "public_key=$PUBLIC_KEY" >> "$GITHUB_OUTPUT"
+          echo "## Live preview" >> "$GITHUB_STEP_SUMMARY"
+          echo "[Open Fit Buddy on Appetize.io]($PREVIEW)" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Public key: \`$PUBLIC_KEY\`" >> "$GITHUB_STEP_SUMMARY"
+          if [ -n "$MANAGE_URL" ]; then
+            echo "Manage: $MANAGE_URL" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Note when Appetize is not configured
+        if: env.APPETIZE_API_TOKEN == ''
+        env:
+          APPETIZE_API_TOKEN: ${{ secrets.APPETIZE_API_TOKEN }}
+        run: |
+          {
+            echo "## Build artifact ready"
+            echo ""
+            echo "Appetize.io upload was skipped because \`APPETIZE_API_TOKEN\` is not configured as a repo secret."
+            echo ""
+            echo "First-time setup:"
+            echo "1. Sign up at https://appetize.io (free)"
+            echo "2. Visit https://appetize.io/account → API tokens, create one"
+            echo "3. In this repo: Settings → Secrets and variables → Actions → New repository secret"
+            echo "   - Name: \`APPETIZE_API_TOKEN\`, Value: the token from step 2"
+            echo "4. Re-run this workflow"
+            echo ""
+            echo "On the second build the workflow will create a new Appetize app and print its preview URL."
+            echo "After that, copy the printed \`publicKey\` into a second secret named \`APPETIZE_PUBLIC_KEY\` so subsequent builds update the same preview link."
+            echo ""
+            echo "In the meantime, the iOS Simulator .app bundle is downloadable as a build artifact above."
+          } >> "$GITHUB_STEP_SUMMARY"

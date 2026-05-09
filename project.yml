@@ -1,0 +1,59 @@
+name: UltimateFitBuddy
+
+options:
+  bundleIdPrefix: com.jonatanriise
+  deploymentTarget:
+    iOS: "17.0"
+  developmentLanguage: en
+  generateEmptyDirectories: true
+  createIntermediateGroups: true
+  groupSortPosition: top
+
+settings:
+  base:
+    SWIFT_VERSION: "5.10"
+    IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    SWIFT_STRICT_CONCURRENCY: minimal
+
+targets:
+  UltimateFitBuddy:
+    type: application
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: UltimateFitBuddy
+        excludes:
+          - "**/*.md"
+          - "Generated-Info.plist"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.jonatanriise.fitbuddy
+        PRODUCT_NAME: UltimateFitBuddy
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        TARGETED_DEVICE_FAMILY: "1"
+        CODE_SIGN_STYLE: Automatic
+        ENABLE_PREVIEWS: YES
+        DEVELOPMENT_ASSET_PATHS: ""
+        SWIFT_EMIT_LOC_STRINGS: YES
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        CODE_SIGN_ENTITLEMENTS: UltimateFitBuddy/UltimateFitBuddy.entitlements
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: UltimateFitBuddy/Generated-Info.plist
+    info:
+      path: UltimateFitBuddy/Generated-Info.plist
+      properties:
+        CFBundleDisplayName: Fit Buddy
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        UILaunchScreen: {}
+        UIApplicationSupportsIndirectInputEvents: true
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        UIRequiredDeviceCapabilities:
+          - arm64
+        NSHealthShareUsageDescription: Read your steps, weight, and active energy from Apple Health to populate your dashboard.
+        NSHealthUpdateUsageDescription: Save logged workouts and meals back to Apple Health so all your data lives in one place.
+        NSCameraUsageDescription: Scan barcodes on packaged food so you can log nutrition without typing.

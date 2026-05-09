@@ -1,0 +1,40 @@
+# Xcode
+*.xcodeproj/
+*.xcworkspace/
+DerivedData/
+build/
+xcuserdata/
+*.xcscmblueprint
+*.xccheckout
+*.moved-aside
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# SPM
+.swiftpm/
+Package.resolved
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+data-pipeline/seed/raw/
+data-pipeline/seed/usda_seed.sqlite
+
+# Bundled seed (rebuilt on Mac, do not commit the binary)
+UltimateFitBuddy/Resources/usda_seed.sqlite
+
+# macOS
+.DS_Store
+
+# Editor
+.vscode/
+.idea/
+
+# Node / web-prototype
+node_modules/
+
+# Playwright screenshots (test artifacts)
+web-prototype/screenshots/

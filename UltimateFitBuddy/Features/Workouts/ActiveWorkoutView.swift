@@ -1,0 +1,203 @@
+import SwiftUI
+import SwiftData
+
+struct ActiveWorkoutView: View {
+    @Environment(\.modelContext) private var modelContext
+    @Environment(\.dismiss) private var dismiss
+    @Environment(AppState.self) private var appState
+
+    @State private var session: WorkoutSession?
+    @State private var showingExercisePicker = false
+    @State private var showingPlateCalc = false
+    @State private var restSeconds: Int? = nil
+    @State private var elapsedTimer: Timer?
+    @State private var elapsed: TimeInterval = 0
+
+    var body: some View {
+        Group {
+            if let session {
+                workoutBody(session: session)
+            } else {
+                ProgressView()
+                    .onAppear { startSession() }
+            }
+        }
+        .navigationTitle("Active")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button("Finish") { finish() }
+                    .disabled(session == nil)
+            }
+        }
+        .onDisappear { elapsedTimer?.invalidate() }
+        .sheet(isPresented: $showingExercisePicker) {
+            ExercisePickerView { exercise in
+                addExercise(exercise)
+            }
+        }
+        .sheet(isPresented: $showingPlateCalc) {
+            PlateCalculatorView()
+        }
+        .overlay(alignment: .bottom) {
+            if let s = restSeconds {
+                RestTimerOverlay(seconds: s) { restSeconds = nil }
+                    .padding()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func workoutBody(session: WorkoutSession) -> some View {
+        let groups = session.setsByExercise
+        List {
+            Section {
+                HStack {
+                    VStack(alignment: .leading) {
+                        TextField("Workout name", text: Binding(
+                            get: { session.name },
+                            set: { session.name = $0 }
+                        ))
+                        .font(.headline)
+                        Text(formatElapsed(elapsed))
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button { showingPlateCalc = true } label: {
+                        Image(systemName: "function").imageScale(.large)
+                    }
+                }
+            }
+            ForEach(groups, id: \.exerciseId) { group in
+                Section(header: Text(group.exerciseName).font(.headline)) {
+                    ForEach(group.sets) { set in
+                        SetRowView(set: set, onComplete: {
+                            set.isCompleted = true
+                            try? modelContext.save()
+                            restSeconds = 90
+                        })
+                    }
+                    Button {
+                        addSet(to: session, exerciseId: group.exerciseId, exerciseName: group.exerciseName)
+                    } label: {
+                        Label("Add set", systemImage: "plus.circle")
+                    }
+                }
+            }
+            Section {
+                Button {
+                    showingExercisePicker = true
+                } label: {
+                    Label("Add exercise", systemImage: "plus")
+                }
+            }
+        }
+    }
+
+    private func startSession() {
+        let s = WorkoutSession(name: "", startedAt: .now)
+        modelContext.insert(s)
+        try? modelContext.save()
+        session = s
+        elapsedTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in
+            elapsed = Date.now.timeIntervalSince(s.startedAt)
+        }
+    }
+
+    private func addExercise(_ exercise: Exercise) {
+        guard let session else { return }
+        let nextOrdinal = (session.sets ?? []).filter { $0.exerciseId == exercise.id }.count
+        let set = ExerciseSet(
+            exerciseId: exercise.id,
+            exerciseName: exercise.name,
+            ordinal: nextOrdinal,
+            reps: 0,
+            weightKg: 0
+        )
+        set.session = session
+        modelContext.insert(set)
+        try? modelContext.save()
+    }
+
+    private func addSet(to session: WorkoutSession, exerciseId: UUID, exerciseName: String) {
+        let nextOrdinal = (session.sets ?? []).filter { $0.exerciseId == exerciseId }.count
+        let lastSet = (session.sets ?? [])
+            .filter { $0.exerciseId == exerciseId }
+            .sorted { $0.ordinal < $1.ordinal }
+            .last
+        let set = ExerciseSet(
+            exerciseId: exerciseId,
+            exerciseName: exerciseName,
+            ordinal: nextOrdinal,
+            reps: lastSet?.reps ?? 0,
+            weightKg: lastSet?.weightKg ?? 0
+        )
+        set.session = session
+        modelContext.insert(set)
+        try? modelContext.save()
+    }
+
+    private func finish() {
+        guard let session else { return }
+        session.endedAt = .now
+        try? modelContext.save()
+        // Persist a workout sample to HealthKit (best-effort)
+        Task {
+            await appState.healthKit.saveWorkout(
+                start: session.startedAt,
+                end: session.endedAt ?? .now,
+                totalEnergyKcal: nil
+            )
+        }
+        elapsedTimer?.invalidate()
+        dismiss()
+    }
+
+    private func formatElapsed(_ t: TimeInterval) -> String {
+        let s = Int(t)
+        return String(format: "%02d:%02d:%02d", s / 3600, (s % 3600) / 60, s % 60)
+    }
+}
+
+struct SetRowView: View {
+    @Bindable var set: ExerciseSet
+    var onComplete: () -> Void
+    var body: some View {
+        HStack(spacing: 12) {
+            Text("\(set.ordinal + 1)")
+                .font(.caption.bold())
+                .frame(width: 22, height: 22)
+                .background(set.isCompleted ? AppTheme.accent : Color.gray.opacity(0.2))
+                .foregroundStyle(set.isCompleted ? .white : .primary)
+                .clipShape(Circle())
+
+            HStack(spacing: 4) {
+                TextField("kg", value: $set.weightKg, format: .number)
+                    .keyboardType(.decimalPad)
+                    .frame(width: 60)
+                    .multilineTextAlignment(.trailing)
+                Text("kg").font(.caption).foregroundStyle(.secondary)
+            }
+
+            HStack(spacing: 4) {
+                TextField("reps", value: $set.reps, format: .number)
+                    .keyboardType(.numberPad)
+                    .frame(width: 50)
+                    .multilineTextAlignment(.trailing)
+                Text("reps").font(.caption).foregroundStyle(.secondary)
+            }
+
+            Spacer()
+
+            Button {
+                onComplete()
+            } label: {
+                Image(systemName: set.isCompleted ? "checkmark.circle.fill" : "circle")
+                    .imageScale(.large)
+                    .foregroundStyle(set.isCompleted ? AppTheme.accent : .secondary)
+            }
+            .buttonStyle(.plain)
+        }
+    }
+}
