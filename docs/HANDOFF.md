@@ -1,102 +1,174 @@
-# Mac handoff — first build
+# Mac handoff
 
-This is a checklist for the Mac side. Goal: take you from "freshly cloned repo on the Mac" to "alpha app installed on your iPhone" with as little manual work as possible.
+Pick this up on the Mac, get the iOS app installed on your iPhone, and keep iterating. The Windows side has been used to scaffold every Swift file, every Python data-pipeline script, every doc, and a fully-working web prototype that acts as the design + logic reference. The Mac just has to compile, sign, run, and start porting.
 
-## 0. Prerequisites
-
-- macOS with the latest stable Xcode installed (App Store).
-- Your iPhone, the Lightning/USB-C cable.
-- Your free Apple ID signed in to Xcode (`Xcode → Settings → Accounts`).
-- Homebrew (`/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"`).
-
-## 1. Sync the project to the Mac
-
-If you used iCloud Drive or git, just open the project on the Mac. Otherwise, copy the `UltimateFitBuddy/` folder over (rsync, AirDrop the zip, USB).
-
-## 2. Install tools (one-time)
+## TL;DR — happy-path bring-up (~30 min)
 
 ```bash
+# 0. Prereqs
 brew install xcodegen python@3.12
-```
 
-## 3. Build the food seed database
+# 1. Clone (or pull, if you already have it)
+git clone <your remote>/UltimateFitBuddy.git
+cd UltimateFitBuddy
 
-This runs locally on the Mac. The download is ~150-300 MB; the resulting bundled SQLite is ~10-20 MB.
-
-```bash
-cd UltimateFitBuddy/data-pipeline
-python3 -m venv .venv
-source .venv/bin/activate
+# 2. Build the food seed (~5 min, downloads ~200MB, emits ~15MB sqlite)
+cd data-pipeline
+python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 python download_usda.py
 python build_seed_db.py
-```
+cd ..
 
-The script writes `seed/usda_seed.sqlite` and copies it into `../UltimateFitBuddy/Resources/usda_seed.sqlite`. That file gets bundled with the app.
-
-If anything fails here, the app will still build — `SeedDataService` falls back to a much smaller hard-coded set of common foods.
-
-## 4. Generate the Xcode project
-
-```bash
-cd ..  # back to repo root
+# 3. Generate the Xcode project
 xcodegen generate
+
+# 4. Open and configure signing
+open UltimateFitBuddy.xcodeproj
+#   Target → Signing & Capabilities → Team = your Apple ID
+#   Bundle Id may need a unique suffix on free tier (see §5)
+
+# 5. Plug in the iPhone, Cmd+R
 ```
 
-This produces `UltimateFitBuddy.xcodeproj`. The `.xcodeproj` is gitignored — it gets regenerated on demand.
+If steps 1-3 succeed and Xcode builds for the simulator, the rest is signing/capability friction. Keep reading.
 
-## 5. Open and configure signing
+## What's already done
+
+### Web prototype (`web-prototype/`) — feature-complete reference
+Pure HTML/CSS/JS. Run with any static server (`npx http-server -p 5173 .`) and open in a browser. This is the design source of truth and the logic source of truth — every formula has a unit test that runs in-app.
+
+Includes:
+- Native-iOS visual language: SF-symbols-style icons, system colours, inset-grouped lists, hero card with Apple Activity-style triple ring (calories + protein + water), polished water grid, profile summary header, dark/light/match-system theme picker.
+- All MyFitnessPal core: meal slots, food search, barcode scanner sim with Open Food Facts fixtures, recipes builder, saved meals, water log, cardio log, daily macro hero with over/left pill.
+- All Strong core: empty workout, routines, exercise library, active workout with warmup toggle / PR detection / rest timer, workout detail, weekly volume-by-muscle chart, calendar view of workouts + meals.
+- Body composition hub: InBody import, caliper measurement (Jackson-Pollock 3/7-site, sex-specific), US Navy, BMI, FFMI, BSA, WHR, BMR (Mifflin + Katch-McArdle), TDEE with activity factors, MacroFactor-style adaptive TDEE, Wilks-1994, DOTS, IPF GL, VO2max (Cooper, Uth-Sorensen-Overgaard).
+- 51 in-app unit tests covering every formula and the barcode dataset. Run from the test-tube icon in the Today nav bar, or via `node smoke.js` headlessly.
+
+### iOS scaffold (`UltimateFitBuddy/`)
+Compiles (in theory — never been near `xcodebuild`). Models, views, and services exist for everything **except the body composition hub** and the new dashboard rings/profile-header. Source layout in `docs/ARCHITECTURE.md`.
+
+| Area | Web | iOS |
+|---|---|---|
+| Workout logger / routines / PRs / rest timer / plate calc / calendar | done | done |
+| Exercise library | done | done |
+| Food search + barcode + meal slots + macro totals | done | done |
+| Recipes + saved meals | done | done |
+| Water + cardio | done | done |
+| Body weight + measurements (multi-kind) | done | done |
+| Onboarding | done | done |
+| Activity-rings hero + nutrition kcal hero card | done | not yet |
+| Profile summary header (avatar + name + body stat) | done | not yet |
+| Body composition hub (InBody / calipers / Wilks / DOTS / VO2max / adaptive TDEE) | done | not yet |
+| 7-day calorie chart on dashboard | done | done (SwiftUI Charts) |
+| Volume-by-muscle on Workouts | done | done |
+
+### CI (`.github/workflows/`)
+- `build-ios.yml` — macos-15 runner, builds on push, uploads `.app` artifact. Free for public repos.
+- `preview-ios.yml` — runs Maestro walkthrough on the simulator, uploads screenshots. The flow file lives at `.maestro/walkthrough.yaml` and skips onboarding via a `runFlow` block.
+
+### Data (`data-pipeline/`)
+- `download_usda.py` — fetches USDA FoodData Central CSVs (Foundation + SR Legacy).
+- `build_seed_db.py` — filters to ~5-10k high-quality entries, emits `seed/usda_seed.sqlite`, copies it into `UltimateFitBuddy/Resources/`.
+- `exercises/exercises.json` — curated exercise library imported on first iOS launch.
+
+## Mac bring-up — the long version
+
+### 1. Tools
+```bash
+brew install xcodegen python@3.12
+xcode-select --install   # if you haven't already
+```
+Open Xcode once, accept the license, sign in with your Apple ID under `Xcode → Settings → Accounts`.
+
+### 2. Repo + seed
+The `.xcodeproj` is gitignored — it's regenerated by XcodeGen. Always run `xcodegen generate` after pulling if `project.yml` changed.
 
 ```bash
+git clone <remote>/UltimateFitBuddy.git
+cd UltimateFitBuddy/data-pipeline
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+python download_usda.py     # ~150-300MB
+python build_seed_db.py     # writes seed/usda_seed.sqlite + copies to UltimateFitBuddy/Resources/
+deactivate && cd ..
+```
+
+If the seed build fails, the app still launches — `SeedDataService` falls back to a small hard-coded list. Fix it later, ship now.
+
+### 3. Generate + open
+```bash
+xcodegen generate
 open UltimateFitBuddy.xcodeproj
 ```
 
-In Xcode:
-1. Click the project in the navigator → select the `UltimateFitBuddy` target → `Signing & Capabilities`.
-2. Set **Team** to your personal Apple ID (free).
-3. **Bundle Identifier** is `com.jonatanriise.fitbuddy`. Change the prefix if Xcode complains it's taken (try `com.jonatanriise.fitbuddy.dev`).
-4. **Capabilities present** in the entitlements:
-   - HealthKit
-   - iCloud (CloudKit)
-   - Background modes (workout sessions)
-   
-   If iCloud throws errors with a free Apple ID (it sometimes does — paid accounts are technically required for some CloudKit features), **remove the iCloud capability** and the app falls back to local-only SwiftData. See "Known free-tier issues" below.
+### 4. Sign with your free Apple ID
+In Xcode → target `UltimateFitBuddy` → **Signing & Capabilities**:
+- **Team**: your personal Apple ID.
+- **Bundle Identifier**: `com.jonatanriise.fitbuddy`. If Xcode says it's taken, append `.dev` (or your initials). Bundle id must be globally unique to your Apple ID.
+- **Capabilities present**: HealthKit, iCloud (CloudKit), Background modes (workout sessions).
 
-## 6. Build & run on simulator first
+### 5. The iCloud landmine
+Free Apple IDs sometimes can't create CloudKit containers. Symptom: build fails with `Couldn't enable iCloud capability`. Fix:
+1. **Signing & Capabilities → click the X next to iCloud** to remove it.
+2. The app falls back to local-only SwiftData via the conditional in `Core/Persistence/ModelContainer+Setup.swift`.
+3. You lose cross-device sync. Single-device works fine.
 
+### 6. Build for simulator first
 Cmd+R with an iPhone simulator selected. Verify:
-- All four tabs load.
-- Dashboard shows zeroed-out widgets.
-- You can tap "Start workout" and log a fake set.
-- Food search returns bundled USDA results.
+- All four tabs render.
+- Tap **You → Load demo data** (if you've ported that — otherwise the simulator is empty, that's fine).
+- Tap **Start workout**, log a fake set, end the workout.
+- Tap **Nutrition → +** on a meal slot, search "chicken", log it.
 
-## 7. Run on your iPhone
+If the simulator works, sideload to your phone:
 
-1. Plug in the phone.
-2. Trust this computer if prompted on the phone.
-3. Select the phone from the device picker in Xcode.
-4. Cmd+R. The first install takes a minute.
-5. **On the phone**, go to `Settings → General → VPN & Device Management → Developer App`, and trust your Apple ID. Then re-launch.
-6. The HealthKit permission sheet will appear on first use — grant the categories.
+### 7. Sideload to iPhone
+1. Plug the phone in. Trust this computer when prompted on the phone.
+2. Select the phone from the Xcode device picker.
+3. Cmd+R. First install takes ~60s.
+4. **On the phone**: `Settings → General → VPN & Device Management → Developer App` → trust your Apple ID.
+5. Re-launch from the home screen. Grant HealthKit permissions on first use.
 
-## 8. The 7-day cert reality
+## What to port next (priority order)
 
-With a free Apple ID, the provisioning profile expires every 7 days. To re-sign:
-- Plug the phone in.
-- Open the project in Xcode.
-- Cmd+R. Done.
+The web prototype is ahead of iOS in three places. Port them in this order.
 
-If you want to lift this constraint, get a paid Apple Developer account ($99/year) and switch to TestFlight. The codebase is structured so that's a config change in `project.yml` and one capability tweak — no code rewrite.
+### 1. Activity-rings dashboard hero (small)
+- Web: `web-prototype/js/app.js::activityRings()` + `.activity-rings*` CSS.
+- iOS: replace the current `DashboardView` calorie ring with a triple-ring SwiftUI shape view. SwiftUI `Canvas` is the cleanest path — draw three arcs with `.stroke(style: StrokeStyle(lineWidth: …, lineCap: .round))`.
+- Same colours: outer = green (calories), middle = red (protein), inner = blue (water).
 
-## Known free-tier issues
+### 2. Profile summary header on the You tab (small)
+- Web: `web-prototype/js/app.js` profile-header block + `.profile-header` CSS.
+- iOS: top of `ProfileView` — circle gradient avatar with first initial, display name, height + latest weight subtitle.
 
-| Symptom | Cause | Fix |
-|---|---|---|
-| `Couldn't enable iCloud capability` | Free Apple ID may lack CloudKit container creation | Remove iCloud capability; SwiftData uses local store only |
-| `Provisioning profile doesn't include the HealthKit entitlement` | Stale profile | Xcode → Product → Clean Build Folder, then re-run |
-| Push not allowed | Push requires paid account | We don't use push in alpha; ignore |
-| App stops launching after 7 days | Cert expired | Re-run from Xcode |
+### 3. Body composition hub (large, but high value)
+- Web: open the You tab → Body composition. Whole module is in `app.js`. All formulas are in the `LOGIC` namespace and have tests.
+- iOS: new `Features/BodyComposition/` folder. Models exist (`BodyMeasurement` is multi-kind), but you need:
+  - `BodyCompositionView` (hub)
+  - `CaliperEntryView` (Jackson-Pollock 3/7-site sheet)
+  - `InBodyImportView` (paste/parse)
+  - `BodyAnalyticsView` (Wilks/DOTS/VO2max/FFMI dashboards with SwiftUI Charts)
+- The pure-logic functions in `LOGIC.*` translate one-for-one to Swift static methods. Copy the test cases from `app.js` into `XCTestCase`s — same numbers, same assertions.
+
+After those three, web and iOS are at parity and you can start the next slice fresh on iOS only.
+
+## Subagents available
+
+`.claude/agents/ios-build.md` is wired up for `xcodebuild` / `simctl` / `devicectl` from the command line. When something goes wrong on the Mac, run a Claude Code session in this directory and the agent knows how to drive the toolchain.
+
+`git-steward` (defined at the parent `Personal/Code/` level) handles all git/GitHub work — never touch git directly, just describe what you want.
 
 ## When something goes wrong
 
-If you hit anything that's not in this doc, run a Claude Code session in `UltimateFitBuddy/` and the project's `ios-build` subagent (defined in `.claude/agents/ios-build.md`) knows how to drive `xcodebuild`, `simctl`, and `devicectl` from the command line.
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| `Couldn't enable iCloud capability` | Free Apple ID limits | Remove iCloud capability; SwiftData uses local store |
+| `Provisioning profile doesn't include the HealthKit entitlement` | Stale profile | Product → Clean Build Folder, re-run |
+| App won't launch after a week | 7-day cert expired | Plug phone in, Cmd+R from Xcode |
+| `xcodegen: command not found` | Not installed | `brew install xcodegen` |
+| Seed db build fails | USDA endpoint flaky / Python version | Skip it — app falls back to hard-coded foods |
+| Bundle id rejected | Already in use under another Apple ID | Add `.dev` or `.<initials>` suffix in `project.yml` |
+
+For long-term operation (the 7-day cert treadmill, paid-tier upgrade path, data backup), see `docs/HOSTING.md`.
